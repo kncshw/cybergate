@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cybergate-plugin"
+version = "0.2.0"
+description = "CyberGate vLLM plugin: selective cyber-domain unlocking on pristine models via a read-only layer probe, a calibrated refusal monitor, and conditional <think> prefill (K = 0.0, no weight edits)"
+readme = "README.md"
+requires-python = ">=3.10"
+# MIT, not the AGPL-3.0-or-later of the sibling `resgate` research package. Nothing here is derived
+# from that package or from Heretic: this repo edits no weights and ships none of the abliteration
+# components that made `resgate` match Heretic's licence. See ATTRIBUTION.md.
+license = { text = "MIT" }
+classifiers = ["License :: OSI Approved :: MIT License"]
+# No runtime dependencies. The decision path is standard library only; torch, transformers and vllm
+# are supplied by the serving container and imported lazily, so the package installs and its tests
+# run on a laptop with none of them present.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.entry-points."vllm.general_plugins"]
+# Invoked in BOTH the API-server and model-worker processes. See docs/PROCESS_TOPOLOGY.md.
+cybergate_think = "cybergate_plugin:register_cybergate_plugin"
+
+[project.entry-points."vllm.logits_processors"]
+# The measured closed-loop CoT controller. vLLM V1 loads every processor registered under this group
+# at engine init, so no launch-command change is needed. The processor self-gates: it adopts only a
+# generation whose prompt ends with the family's open-thought prefix, and leaves every other request
+# -- including every pass-through -- untouched.
+cybergate_cot_steering = "cybergate.hooks.cot_controller:RefusalSteeredCoTProcessor"
+
+[project.scripts]
+cybergate-plugin = "cybergate_plugin.cli:main"
+cybergate-vllm = "cybergate_plugin.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# `cybergate` is the implementation; `cybergate_plugin` is the drop-in import path the live
+# deployment's `--middleware` argument and entry point depend on.
+
+# pytest is configured in `pytest.ini`, not here. Carrying both makes pytest print
+# "WARNING: ignoring pytest config in pyproject.toml" on every run.

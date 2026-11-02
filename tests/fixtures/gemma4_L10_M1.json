@@ -1,0 +1,17 @@
+{
+  "c": [
+    1.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "thresh": 0.10807703530099158,
+  "meta": {
+    "gate_layer": 10,
+    "pool": "mean_user",
+    "category": "cyber_offense",
+    "model_key": "gemma",
+    "model_tag": "gemma4",
+    "note": "synthetic test fixture; tau copied from ops/gemma4_L10_M1.json"
+  }
+}

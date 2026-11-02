@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kit": "qwen38",
+  "family": "qwen38",
+  "model_ids": [
+    "Qwen/Qwen3.8-27B"
+  ],
+  "checkpoint": {
+    "hidden_size": 5120,
+    "num_layers": 64,
+    "provenance": "reported by the live container at hook install: hidden=5120 layers=64; snapshot 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+  },
+  "files": {
+    "operator": "qwen38_L39_M1_serving.json",
+    "refusal_direction": "qwen38_L43_refusal_dir_serving.json"
+  },
+  "gate": {
+    "layer": 39,
+    "pool": "mean_user",
+    "threshold": 0.06295487038076206,
+    "threshold_rule": "R3 (m_budget=11)",
+    "in_sample": false,
+    "threshold_rule_meaning": "The 12th-largest score on the 140 fit-reference prompts. Measured here: 12/140 reference rows clear it, exactly as specified."
+  },
+  "fit": {
+    "method": "M1_subcat_Tridge_lam16",
+    "render": "serving",
+    "render_note": "Fitted with --render serving, NOT the `fit` render the shipped kits use. Qwen3.8's chat template injects a 36-token reasoning-effort preamble that the serving path does not reproduce, so a `fit`-render operator is measured in a render the server never produces. Fitting in the serving render removed that confound and did not fix the kit; see known_gaps.",
+    "n_pos": 100,
+    "n_neg": 140,
+    "category_quality": "AUC 0.9974 in-sample; 100/100 fit positives clear tau; 12/140 reference rows clear it; separation +0.1534 (pos mean +0.1597, neg mean +0.0063).",
+    "refusal_quality": "sep 1.1239; mu_hm_cos +0.000866 (orthogonalization holds); sd_hm_cos 0.040170; z_harm_mean 13.34; 681/681 harmful and 76/1000 harmless rows reach the 1.50 sigma floor. Fitted on 681 harmful + 1000 harmless rows, which is NOT the 692/554 convention the shipped kits use, so this sigma scale is not comparable to gemma4's or qwen36's.",
+    "fitted_by": "notebooks/qwen38_colab.ipynb, 2026-11-02, A100 80GB, bf16"
+  },
+  "measured_live": {
+    "basis": "9 canary prompts replayed through a live vLLM 0.32 server, cybergate_mode=baseline, max_tokens=1, temperature=0, 2026-11-02.",
+    "result": "0 of 5 positives fired. Positives scored +0.0370 / +0.0549 / +0.0225 / -0.0014 / +0.0021 against tau +0.06295, and interleaved with the negatives. The same prompts score +0.2013 to +0.2161 in the capture the operator was fitted on."
+  },
+  "known_gaps": [
+    "THIS KIT DOES NOT GATE. Served under vLLM the category scores collapse by roughly an order of magnitude versus the activations it was fitted on, and nothing fires. It is kept as a record of the finding, not as a deployable kit.",
+    "Cause, by elimination: the directions were fitted on activations captured through `transformers`, which ran reference PyTorch fallbacks for `causal_conv1d` and `chunk_gated_delta_rule`, and served through vLLM's own Gated DeltaNet kernels. Render, token ids (35), span (exact_token_markers at 14:26), operator and tau were all verified identical between capture and serve, and a 20-layer sweep (L30-L49) found no layer whose captured scores match the live ones -- ruling out a layer-indexing error. The forward pass is the only remaining variable. NOT directly observed: the pooled vectors themselves were never compared, which would require instrumenting the worker hook.",
+    "No canaries. A canary pins a measured verdict so a later run can detect a different checkpoint; with the gate firing on nothing there is no verdict worth pinning.",
+    "NOT measured on any evaluation corpus. Recall and leak are unknown.",
+    "The policy thresholds (revoke_ceil, hysteresis_thresh, in_context_pivot_floor, s_cat_last_pivot_floor) are inherited from Qwen3.6 and were never recalibrated, so the mid/late veto and rescue paths are unvalidated on this model.",
+    "bundle_probe_layers is empty, so there is no middle/late candidate consensus for this family."
+  ],
+  "serve": {
+    "reasoning_parser": null,
+    "notes": "bf16; no fp8 and no TRITON_ATTN -- hybrid linear attention. --enforce-eager on 48 Gated DeltaNet layers was exercised once and the server started cleanly."
+  }
+}

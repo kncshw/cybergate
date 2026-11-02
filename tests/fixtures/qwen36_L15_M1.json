@@ -1,0 +1,17 @@
+{
+  "c": [
+    1.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "thresh": 0.07104208703744336,
+  "meta": {
+    "gate_layer": 15,
+    "pool": "mean_user",
+    "category": "cyber_offense",
+    "model_key": "qwen36",
+    "model_tag": "qwen36",
+    "note": "synthetic test fixture; tau copied from ops/qwen36_L15_M1.json"
+  }
+}

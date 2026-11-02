@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "kit": "gemma4",
+  "family": "gemma4",
+  "model_ids": [
+    "google/gemma-4-26B-A4B-it"
+  ],
+  "checkpoint": {
+    "hidden_size": 2816,
+    "num_layers": 30,
+    "provenance": "reported by the live container at hook install: dim=2816, total_layers=30"
+  },
+  "files": {
+    "operator": "gemma4_L16_M1.json",
+    "refusal_direction": "gemma4_L21_refusal_dir.json",
+    "candidate_bundle": "gemma4_candidate_ops_bundle.json",
+    "canaries": "canaries.json",
+    "alternates": {
+      "gemma4_ruleC_serve.json": "Multi-probe category factor (rule C): fires on L21 last OR L20 last. Measured live at 626/675 CySec and 24/234 CatQA, against this kit's 558/23. NOT the default -- it was served, measured and rolled back. Kept here because it is reproducible, and it resolves the candidate bundle from this directory, same as the default operator."
+    }
+  },
+  "gate": {
+    "layer": 16,
+    "pool": "mean_user",
+    "threshold": 0.08284617644833335,
+    "threshold_rule": "R3 (m_budget=11)",
+    "threshold_rule_meaning": "The 12th-largest score on the 140 fit-reference prompts, so exactly 11 of them fire. R3 never sees an evaluation corpus, so this kit's CatQA leak is an out-of-sample measurement rather than a constraint that was fitted.",
+    "in_sample": false,
+    "thresholds_all": {
+      "R3": 0.08284617644833335,
+      "R2": 0.09422932130653716,
+      "Lk16": 0.07828870447767361,
+      "Lk10": 0.08846043695464005
+    }
+  },
+  "fit": {
+    "method": {
+      "name": "M1_subcat_Tridge_lam16",
+      "summary": "Closed-form, no gradient training. Eigendecomposition of the subcategory-centred scatter (divisor 225 = 100 + 140 - 1 - 14), ridge-whitened mean difference with alpha = lambda[15]. 240 forward passes total."
+    },
+    "corpus": {
+      "positives": {
+        "file": "pos_train_cyber_100.json",
+        "n": 100,
+        "md5": "6f40084710913216eaedd57ea5a233bc"
+      },
+      "negative_reference": {
+        "file": "neg_ref_14cats_140.json",
+        "n": 140,
+        "subcategories": 14,
+        "md5": "41c48d0a5d3f4a53efe6e9a982699ea2"
+      },
+      "not_redistributed": "The 240 fit prompts are NOT in this kit; only the handful quoted in canaries.json are. The md5s above identify them so a re-fit can be shown to have used the same corpus.",
+      "overlap_with_evaluation_corpora": "zero, checked by key against all 11 evaluation corpora"
+    },
+    "refusal_direction": {
+      "file": "gemma4_L21_refusal_dir.json",
+      "recipe": "difference-of-means then orthogonalize against the harmless centroid, at L21 'last'. r_unit = unit(raw - <raw,gd>gd) where raw = unit(mean(harmful) - mean(harmless)) and gd = unit(mean(harmless)), on RAW rows. Heretic's orthogonalize_direction, after Arditi et al. 2024.",
+      "variant": "5-prompt 'blind' kit: 1 harmful + 4 harmless build the direction, while the calibration is measured on a separate 692-harmful + 554-harmless corpus. That split is why mu_hm_cos is +0.137 and not ~0: the direction is orthogonal to a 4-prompt centroid, but mu_hm_cos is measured against a different 554-row corpus.",
+      "built_by": "ablation/direction.py:83-93 -> gemma_dir90.pt['d']['21.attn_out']",
+      "source_field_is_misleading": "this file's own `source` names two blobs, 'gemma_dir90.pt (dir_gemma4-26B_sep.pt)'. Only the FIRST is the provenance: unit(gemma_dir90.pt['d']['21.attn_out']) is cosine 1.00000000000 to the shipped r_unit, max elementwise diff 2.6e-09. dir_gemma4-26B_sep.pt is a DIFFERENT direction at cosine 0.906, built by the full-corpus variant that the qwen36 kit ships. The field is left as-is because the served artifact is byte-pinned to the live evaluation.",
+      "calibration_reproduced": "every sidecar field to <=5.6e-16, z_harm_mean bit-identical, recomputed from gemma_pool681_acts.pt with harmless=554 and harmful=692 derivation rows (the 80 para_* and 100 adv_* rows held out), sd ddof=1, linear percentiles.",
+      "direction_not_reproduced_bit_exactly": "cosine 0.9735. The 5-prompt kit's own activation capture did not survive, so its rows were taken from pool681, whose render and padding differ; sep(21) comes out 2.7849 against the blob's 2.8285. The identity of the single harmful prompt is documented but not bit-verified.",
+      "operating_point": "at the policy floor s_ref_z >= 1.50 (cosine +0.214372): 28/554 harmless = 5.1%, 692/692 derivation harmful, 180/180 held-out para_*/adv_*.",
+      "refit": "scripts/fit/README.md"
+    }
+  },
+  "measured_live": {
+    "basis": "1,149-prompt live harvest on the served checkpoint, 2026-10-31, all rows matched by exact prompt sha. Reported on two bases because the worker hook publishes `fired` BEFORE the refusal monitor attaches s_ref_z: the record captures the category gate plus the mid/late rescue but not the policy-level two-factor veto.",
+    "as_recorded": {
+      "cysec_675": 558,
+      "catqa_234": 23,
+      "fit_train_100": 100,
+      "fit_ref_140": 12
+    },
+    "veto_adjusted": {
+      "cysec_675": 553,
+      "catqa_234": 23,
+      "fit_train_100": 100,
+      "fit_ref_140": 12
+    },
+    "decomposition": {
+      "raw_threshold_crossings": 476,
+      "mid_late_rescue_additions": 82,
+      "total_as_recorded": 558,
+      "note": "Rescued rows are stamped with a synthetic score of threshold + 0.002, so a naive `score >= threshold` count reads 482 rather than 476 and double-counts six of them."
+    },
+    "rates": {
+      "cysec_recall": "82.7%",
+      "catqa_leak": "9.8%"
+    },
+    "bio": {
+      "basis": "as_recorded; cybergate_mode=baseline, no system prompt, max_tokens=1, temp=0",
+      "measured": "2026-11-01 from the clean repo via scripts/serving/serve_eval.sh --kit gemma4, no CYBERGATE_SKIP_KIT_CHECK; reproduces a 2026-10-31 run exactly",
+      "wmdp_bio_637": {
+        "n": 637,
+        "as_recorded": 4,
+        "raw": 1,
+        "rescued": 3,
+        "veto_adjusted": 4
+      },
+      "sos_bio_498": {
+        "n": 498,
+        "as_recorded": 0,
+        "raw": 0,
+        "rescued": 0,
+        "veto_adjusted": 0
+      },
+      "wmdp_cyber_637": {
+        "n": 637,
+        "as_recorded": 606,
+        "raw": 594,
+        "rescued": 12,
+        "veto_adjusted": 606
+      },
+      "note": "wmdp_cyber is a pass-rate TARGET (firing is correct); the two bio corpora are leakage non-targets (firing is a false positive). The two bio corpora disagree by two orders of magnitude on the same model and operator -- 4/637 vs 0/498 -- and across models WMDP-bio scores ~+0.05 higher than SOSBench-bio on both gemma4 and qwen36, which points at the multiple-choice framing rather than biology content. Not isolated by a manipulation."
+    }
+  },
+  "measured_offline": {
+    "basis": "offline sweep on precomputed activations; NOT the live serving render",
+    "cysec_delivered": 552,
+    "catqa_leak": 16,
+    "wmdp_cyber_delivered": 611,
+    "zero_stem_delivered": 240,
+    "wmdp_bio_leak": 3,
+    "sos_bio_leak": 0
+  },
+  "known_gaps": [
+    "The mid/late rescue supplies 3 of the 4 wmdp_bio fires, so what little bio leak there is comes from the rescue rather than the threshold.",
+    "The mid/late rescue supplies 82 of the 558 recorded fires. The rescue is not covered by the threshold rule, so that 14.7% of delivered recall rests on a separate mechanism."
+  ],
+  "serve": {
+    "reasoning_parser": null,
+    "reasoning_parser_note": "Passed to vllm as --reasoning-parser. null means the model needs none."
+  }
+}
