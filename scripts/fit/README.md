@@ -199,3 +199,57 @@ full-corpus variant orthogonalizes against the same centroid it calibrates on an
 vector. For a **new** model, use the full-corpus variant: it is what six models were built with,
 it holds `mu_hm_cos` at ~0 so the sigma scale is clean, and on gemma it separates better
 (`z_harm_mean` 14.66 vs 10.73). Pick `--layer` by the `sep` peak, which is what the original did.
+
+
+# Fitting from the engine that serves: `acts_from_serving.py`
+
+Everything above captures through `transformers` and the gate then scores under vLLM. That is an
+**unstated assumption**: the two engines compute the same weights with different kernels, and they
+only have to agree for the fit to transfer. It holds for gemma4 and qwen36 -- gemma4's own capture
+(`capture_hf_v2.py`) is a `transformers` one and it delivers 558/675 live.
+
+It did not hold for Qwen3.8-27B. 48 of its 64 layers are Gated DeltaNet, `transformers` ran
+reference PyTorch fallbacks for `causal_conv1d` and `chunk_gated_delta_rule` while vLLM ran its own
+fused kernels, and the fitted direction scored +0.20 in the capture and +0.02 to +0.05 served.
+Nothing raised. See `kits/qwen38/MANIFEST.json` for what is and is not established about that.
+
+Fitting on vLLM's own pooled vectors removes the assumption instead of testing it. The serving hook
+dumps them when armed:
+
+```bash
+CYBERGATE_DUMP_ACTS_DIR=/content/acts_vllm \
+CYBERGATE_DUMP_ACTS_LAYERS=39,43 \
+vllm serve ...      # any loadable operator will do; it only has to attach, not work
+```
+
+`L<layer>.bin` is `mean_user` (the category factor), `L<layer>_last.bin` is the last position (the
+refusal factor), one fp16 row per request, **in request order**. Replay the corpora strictly
+sequentially -- one request in flight, no retries -- then:
+
+```bash
+python3 scripts/fit/acts_from_serving.py \
+  --dump-dir /content/acts_vllm --layer 39 --pool mean_user --hidden 5120 \
+  --split pos=100 --split neg=140 --out acts_vllm.npz
+
+python3 scripts/fit/fit_category.py ... --acts-cache acts_vllm.npz    # numpy only, no model load
+```
+
+The row count is checked against the file: a retried or concurrent request inserts a row and
+shifts every label after it, which would produce a direction that looks fine and means nothing.
+
+## `diagnose_serving_layer.py`: before re-capturing, check the layer index
+
+Nothing verifies that `transformers` layer `L` and vLLM layer `L` are the same layer. When they are
+not, the symptoms are identical to a bad fit -- operator loads, hook attaches, span correct, scores
+collapse -- and a re-capture is wasted work, because the direction is already right at a different
+index. Serve with `CYBERGATE_CROSS_LAYER_DIAG=1`, which scores the shipped direction at **every**
+layer, and:
+
+```bash
+python3 scripts/fit/diagnose_serving_layer.py --kit kits/qwen38 --ipc-dir "$CYBERGATE_IPC_DIR"
+```
+
+Exit `0` the question is answered (either an index to re-point, or the direction does transfer),
+`1` no layer matches so the activations differ and a re-fit from the dump is the fix, `2` the
+diagnostic was not armed. `kits/<kit>/diagnostic_reference.json` holds the capture-time scores it
+compares against; those are a reference, not canaries -- they assert a score, not a verdict.

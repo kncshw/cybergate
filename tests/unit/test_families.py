@@ -155,13 +155,17 @@ def test_family_by_name_raises_rather_than_falling_back() -> None:
 #: slipping in silently -- that is what `test_every_remaining_family_is_live_verified` enforces.
 UNVERIFIED_WITH_CAUSE = {
     "qwen38": (
-        "Both factors fit soundly (category AUC 0.9974 in-sample, 100/100 fit positives; refusal "
-        "sep 1.1239, mu_hm_cos +0.000866, 681/681 harmful at the 1.50 floor) but the kit does not "
-        "gate under vLLM: the same prompts score +0.02-0.05 served against +0.20 in the capture. "
-        "Render, token ids, span, operator and tau were verified identical and a 20-layer sweep "
-        "ruled out an indexing error, leaving the forward pass -- activations captured through "
-        "`transformers` reference kernels, served through vLLM's Gated DeltaNet kernels. Carried "
-        "as a record of that finding; see kits/qwen38/MANIFEST.json known_gaps."
+        "Both factors look sound offline (category AUC 0.9974, 100/100 fit positives; refusal sep "
+        "1.1239, mu_hm_cos +0.000866, 681/681 harmful at the 1.50 floor -- all IN-SAMPLE, 240 "
+        "rows in 5120 dimensions) but the kit does not gate under vLLM: the same prompts score "
+        "+0.02-0.05 served against +0.20 in the capture. Render, token ids, span, operator and "
+        "tau were verified identical. The cause is NOT established: either vLLM numbers the "
+        "layers differently from transformers on this composite checkpoint (the sweep that was "
+        "run covered L30-L49 only, so it does not exclude a larger offset), or the activations "
+        "themselves differ because the capture ran transformers' reference `causal_conv1d` / "
+        "`chunk_gated_delta_rule` fallbacks against vLLM's fused Gated DeltaNet kernels. gemma4 "
+        "was also captured through transformers and transfers, so the engine difference alone is "
+        "not the explanation. Carried as a record; see kits/qwen38/MANIFEST.json known_gaps."
     ),
 }
 

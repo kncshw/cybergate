@@ -11,22 +11,33 @@ class Qwen38Family(Qwen36Family):
     """Qwen3.8-27B: 27B dense, 64 layers, hybrid full/linear attention. **Does not gate.**
 
     `verified_live = False` and it is not decoration. Both factors were fitted in the serving
-    render and both are sound by every offline diagnostic -- category AUC 0.9974 in-sample with
-    100/100 fit positives clearing tau, refusal `sep` 1.1239 with `mu_hm_cos` +0.000866 and
-    681/681 harmful rows above the 1.50 floor. Served under vLLM on 2026-11-02 the same prompts
-    scored **+0.02 to +0.05 against +0.20 in the capture**, and nothing fired.
+    render and both look sound offline -- category AUC 0.9974 with 100/100 fit positives clearing
+    tau, refusal `sep` 1.1239 with `mu_hm_cos` +0.000866 and 681/681 harmful rows above the 1.50
+    floor. Every one of those numbers is IN-SAMPLE, on 240 rows in 5120 dimensions, where a ridge
+    fit separates almost any labelling. Served under vLLM on 2026-11-02 the same prompts scored
+    **+0.02 to +0.05 against +0.20 in the capture**, and nothing fired.
 
-    The cause is not the render, the span or the operator. All were held identical and verified:
-    the same 35 token ids, `span_method=exact_token_markers(qwen38)` at (14, 26), the same
-    operator and tau. A 20-layer sweep (L30-L49) found no layer whose captured scores match the
-    live ones, ruling out an indexing error. What remains is the forward pass: the kit was fitted
-    on activations captured through `transformers` -- running reference PyTorch fallbacks for
-    `causal_conv1d` and `chunk_gated_delta_rule` -- and served through vLLM's own Gated DeltaNet
-    kernels. The two do not agree on this architecture.
+    The cause is **not established**. Held identical and verified between capture and serve: the
+    render, the same 35 token ids, `span_method=exact_token_markers(qwen38)` at (14, 26), the
+    operator and tau. Two candidates remain, distinguishable by one measurement:
 
-    That is an unstated assumption of `scripts/fit/`, not a defect in this declaration: it holds
-    for gemma4 and qwen36, both standard attention, both serving correctly. Gating a hybrid
-    linear-attention model needs activations captured from vLLM itself.
+    1. **Layer numbering.** transformers L39 may not be vLLM L39. This checkpoint is a composite
+       `Qwen3_5ForConditionalGeneration` whose decoder is nested under `text_config` /
+       `language_model`, which is the shape that produces a *large* offset. The 20-layer sweep
+       that was run covered L30-L49, so it bounds the search to +/-10 around L39 and does not
+       exclude this. An earlier version of this docstring said it did.
+    2. **The activations.** The capture ran transformers' reference PyTorch fallbacks for
+       `causal_conv1d` and `chunk_gated_delta_rule`; the serve ran vLLM's fused Gated DeltaNet
+       kernels. Two implementations of a *recurrent* operator, compounding over 48 layers.
+
+    gemma4 was **also** captured through `transformers` (`capture_hf_v2.py`) and transfers fine,
+    so "transformers vs vLLM" is not by itself the explanation. The asymmetry is that gemma4 is
+    standard attention throughout: there is no such operator in it to implement two ways.
+
+    `CYBERGATE_CROSS_LAYER_DIAG=1` scores this direction at every layer and tells the two apart.
+    If (2), the fix is to re-fit from vLLM's own pooled vectors -- `CYBERGATE_DUMP_ACTS_DIR` plus
+    `scripts/fit/acts_from_serving.py` -- so the capture engine and the serving engine are the
+    same program.
 
     Also unverified, separately: the policy thresholds (`revoke_ceil`, `hysteresis_thresh`,
     `in_context_pivot_floor`, `s_cat_last_pivot_floor`) are Qwen3.6's, calibrated at its L15/L28

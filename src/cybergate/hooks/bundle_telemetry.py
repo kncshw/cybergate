@@ -61,11 +61,20 @@ def attach_bundle_telemetry_hooks(
     family: ModelFamily,
     state: dict[str, Any],
 ) -> None:
-    """Attach read-only scoring hooks at the candidate layers, when a bundle file is present."""
+    """Attach read-only scoring hooks at the candidate layers, when a bundle file is present.
+
+    A bundle is not the only reason to attach. `CYBERGATE_CROSS_LAYER_DIAG` and
+    `CYBERGATE_DUMP_ACTS_DIR` below are per-layer diagnostics that need no bundle at all -- they
+    carry their own direction (the shipped one) or no direction (the dump). Returning early on a
+    missing bundle made both unreachable for exactly the family that needs them: one with
+    `default_bundle_name = None`, which is every newly fitted family before its bundle exists.
+    """
     import torch  # type: ignore
 
     bundle_path = _resolve_bundle_path(family)
-    if bundle_path is None:
+    if bundle_path is None and not (
+        env_first("CYBERGATE_CROSS_LAYER_DIAG") or env_first("CYBERGATE_DUMP_ACTS_DIR")
+    ):
         return
 
     # Cross-layer diagnostic: the SHIPPED operator's own direction, applied at every probe layer.
@@ -89,21 +98,47 @@ def attach_bundle_telemetry_hooks(
         except Exception as exc:
             log_cybergate_event("CYBERGATE-XLAYER-WARN", f"cross-layer diagnostic unavailable: {exc}")
 
+    # Restricting the layers matters in practice: both pools at all 64 layers is ~1.3 MB per
+    # request, so a 1681-row refusal corpus writes 2.2 GB through 215k append-and-close calls.
+    # A fit needs the gate layer and the refusal layer, so name those two.
+    dump_layers: set[int] | None = None
+    raw_layers = env_first("CYBERGATE_DUMP_ACTS_LAYERS")
+    if raw_layers:
+        try:
+            dump_layers = {int(p) for p in raw_layers.replace(",", " ").split()}
+        except ValueError:
+            log_cybergate_event(
+                "CYBERGATE-ACTDUMP-WARN",
+                f"CYBERGATE_DUMP_ACTS_LAYERS={raw_layers!r} is not a layer list; dumping all",
+            )
+
     dump_dir = env_first("CYBERGATE_DUMP_ACTS_DIR")
     if dump_dir:
         try:
             Path(dump_dir).mkdir(parents=True, exist_ok=True)
             state["act_dump_dir"] = dump_dir
-            log_cybergate_event("CYBERGATE-ACTDUMP", f"pooled-activation dump armed at {dump_dir}")
+            state["act_dump_layers"] = dump_layers
+            log_cybergate_event(
+                "CYBERGATE-ACTDUMP",
+                f"pooled-activation dump armed at {dump_dir} for "
+                f"{'layers ' + ','.join(map(str, sorted(dump_layers))) if dump_layers else 'all layers'}",
+            )
         except OSError as exc:
             log_cybergate_event("CYBERGATE-ACTDUMP-WARN", f"dump dir unusable: {exc}")
 
     try:
-        raw_bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-        bundle = raw_bundle.get("layers") or raw_bundle.get("operators") or {}
+        if bundle_path is not None:
+            raw_bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+            bundle = raw_bundle.get("layers") or raw_bundle.get("operators") or {}
+        else:
+            bundle = {}
         thresholds_map = state.setdefault("bundle_thresholds", {})
         attached: list[int] = []
-        diag_layers = range(len(layers)) if shipped_mean is not None else ()
+        # Either diagnostic wants every layer: the cross-layer one to find which layer the shipped
+        # direction actually belongs to, the dump to capture pooled vectors for an offline re-fit.
+        diag_layers = (
+            range(len(layers)) if (shipped_mean is not None or dump_dir) else ()
+        )
         probe_layers = sorted(set(family.bundle_probe_layers) | set(diag_layers))
         for probe_layer in probe_layers:
             if probe_layer >= len(layers):
@@ -116,7 +151,7 @@ def attach_bundle_telemetry_hooks(
                 last_vec = l_entry["last"].get("c") or l_entry["last"].get("w")
                 mean_cpu = torch.tensor(mean_vec, dtype=torch.float32)
                 last_cpu = torch.tensor(last_vec, dtype=torch.float32)
-            elif shipped_mean is None:
+            elif shipped_mean is None and not dump_dir:
                 continue
             for pool_name in ("mean_user", "last") if in_bundle else ():
                 th = l_entry.get(pool_name, {}).get("thresholds")
@@ -132,7 +167,8 @@ def attach_bundle_telemetry_hooks(
         if attached:
             log_cybergate_event(
                 "CYBERGATE-BUNDLE-HOOK",
-                f"Attached {len(attached)} candidate-layer probes {attached} from {bundle_path.name}",
+                f"Attached {len(attached)} candidate-layer probes {attached} from "
+                f"{bundle_path.name if bundle_path is not None else 'diagnostics only (no bundle)'}",
             )
     except Exception as exc:
         log_cybergate_event("CYBERGATE-BUNDLE-WARN", f"Candidate bundle hooks skipped: {exc}")
@@ -235,11 +271,21 @@ def _make_hook(
                     cosine(h_seq[u_start:u_end].float().mean(dim=0), dirs["ship_mean"]), 6
                 )
             dump_dir = state.get("act_dump_dir")
-            if dump_dir:
+            want = state.get("act_dump_layers")
+            if dump_dir and (want is None or layer_idx in want):
+                # BOTH pools. The category factor is fitted on `mean_user` and the refusal factor
+                # on `last`, so dumping only the first makes half the kit unfittable from vLLM's
+                # own activations -- which is the only way to fit a model whose kernels disagree
+                # with `transformers`. One row appended per forward, in request order: the replay
+                # must be strictly sequential for row i to mean prompt i, and the caller checks
+                # the row count against the prompt count.
                 try:
-                    pooled = h_seq[u_start:u_end].float().mean(dim=0).to("cpu")
-                    with open(f"{dump_dir}/L{layer_idx}.bin", "ab") as fh:
-                        fh.write(pooled.to(torch.float16).numpy().tobytes())
+                    for suffix, vec in (
+                        ("", h_seq[u_start:u_end].float().mean(dim=0)),
+                        ("_last", h_seq[-1].float()),
+                    ):
+                        with open(f"{dump_dir}/L{layer_idx}{suffix}.bin", "ab") as fh:
+                            fh.write(vec.to("cpu").to(torch.float16).numpy().tobytes())
                 except Exception:
                     pass
             if dirs["ship_last"] is not None:
