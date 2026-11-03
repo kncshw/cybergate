@@ -33,16 +33,50 @@
     "fitted_by": "notebooks/qwen38_colab.ipynb, 2026-11-02, A100 80GB, bf16"
   },
   "measured_live": {
-    "basis": "9 canary prompts replayed through a live vLLM 0.32 server, cybergate_mode=baseline, max_tokens=1, temperature=0, 2026-11-02.",
-    "result": "0 of 5 positives fired. Positives scored +0.0370 / +0.0549 / +0.0225 / -0.0014 / +0.0021 against tau +0.06295, and interleaved with the negatives. The same prompts score +0.2013 to +0.2161 in the capture the operator was fitted on."
+    "basis": "A100 80GB, vLLM 0.32.0, bf16, --enforce-eager --no-enable-prefix-caching, serving render (cybergate_mode=baseline, no system prompt, max_tokens=1, temp=0). Every row matched to its decision record by exact prompt sha. 2026-11-02/03.",
+    "shipped_category_direction_does_not_transfer": {
+      "auc_vs_fit_references": 0.5893,
+      "auc_vs_harmless": 0.55,
+      "n": "12 of its own 100 fit positives, 14 of its own 140 fit references, 15 harmless",
+      "claimed_in_sample_auc": 0.9974,
+      "note": "Chance. Both sides of this comparison are the serving render and the direction is the shipped one, so it is not a render artifact. No layer rescued it: min(positive) - max(negative) was negative at all 44 layers that reported."
+    },
+    "shipped_refusal_direction_DOES_transfer": {
+      "harmful_over_floor": "31/31",
+      "harmless_over_floor": "0/15",
+      "s_ref_z_harmful_mean": 4.15,
+      "s_ref_z_harmless_mean": -0.92,
+      "s_ref_z_harmless_max": -0.187,
+      "s_ref_z_harmful_min": 2.622,
+      "note": "Clean separation with the 1.50 floor inside a 2.8-z gap. Compressed against the fit -- cos 0.168 live against the 0.537 implied by z_harm_mean 13.34 -- but the z-scale still works because sd_hm is small. mu_hm/sd_hm are still the transformers values and have NOT been re-measured live."
+    },
+    "refit_on_vllm_activations": {
+      "method": "915 prompts replayed at the live server with the activation dump armed, then the same M1 ridge solver and the same R3 threshold rule, fitted on the same 100 positives and 140 references. scripts/fit/harvest_vllm_acts.py then scripts/fit/sweep_layers_from_dump.py.",
+      "holdout": "cysecbench_val_675, disjoint from the fit corpora, never seen by the fit",
+      "held_out_recall_L51": 0.9615,
+      "held_out_recall_L39": 0.9526,
+      "standard_error": 0.0074,
+      "in_sample_auc_all_64_layers": "0.9894 to 0.9993",
+      "note": "Refitting at the SAME L39 takes held-out recall from chance to 0.9526: only the capture geometry changed, so the geometry mismatch was the cause and the in-sample 0.9974 was never evidence either way. The in-sample AUC is 0.99+ at all 64 layers INCLUDING those with 0.21 held-out recall, which is why layers are ranked out of sample. L51 and L39 differ by about one standard error -- six prompts of 675 -- so that ordering is not meaningful, and taking the best of 64 biases the winner upward. LEAK IS NOT YET MEASURED on any out-of-sample non-target set, so none of this is yet a gating result."
+    },
+    "two_prefills_per_request": {
+      "note": "Every request runs a Pass-1 observation of the user turn and a Pass-2 <think>-injected prefill. publish_decision already dropped Pass-2; the activation dump did not until a620a32, so half of every dump was pooled over server-authored text with nothing in the file to show it."
+    },
+    "cross_layer_diagnostic_covers_layers_0_to_ref_layer": {
+      "reported": 44,
+      "of": 64,
+      "note": "multi_layer_scores held X0..X43 only. The record is published when the refusal monitor completes at ref_layer=43, so layers above it have not run yet. The dump is unaffected -- it writes per layer straight to disk -- so 44-63 are recoverable offline. Any 'no layer reproduces this' conclusion drawn from the record alone is bounded to 0..ref_layer."
+    }
   },
   "known_gaps": [
-    "THIS KIT DOES NOT GATE. Served under vLLM the category scores collapse by roughly an order of magnitude versus the activations it was fitted on, and nothing fires. It is kept as a record of the finding, not as a deployable kit.",
-    "Cause: NOT established. Verified identical between capture and serve: the render, the 35 token ids, the span (exact_token_markers at 14:26), the operator and tau. Two candidates remain and they are distinguishable by one measurement. (a) LAYER NUMBERING: transformers L39 may not be vLLM L39. This checkpoint is a composite `Qwen3_5ForConditionalGeneration` whose decoder is nested under `text_config`/`language_model`, which is the shape that produces a LARGE offset. The 20-layer sweep that was run covered L30-L49 only, so it bounds the search to +/-10 around L39 and does NOT exclude this -- an earlier version of this file claimed it did, which was a bounded negative written as a fact. (b) THE ACTIVATIONS: the capture ran transformers' reference PyTorch fallbacks for `causal_conv1d` and `chunk_gated_delta_rule` while the serve ran vLLM's fused Gated DeltaNet kernels -- two implementations of a recurrent operator, compounding over the 48 linear-attention layers. Note that gemma4 was ALSO captured through transformers and transfers fine, so 'transformers vs vLLM' is not by itself the explanation; the asymmetry is that gemma4 is standard attention throughout and has no such operator to implement two ways. To settle it: serve with CYBERGATE_CROSS_LAYER_DIAG=1, which scores this direction at every layer, and compare against the capture-time scores. If some layer reproduces them it is (a) and no re-capture is needed; if none does it is (b), and the fix is to re-fit from vLLM's own pooled vectors via CYBERGATE_DUMP_ACTS_DIR and scripts/fit/acts_from_serving.py.",
-    "SELECTION, not just fitting: every number here is in-sample -- 240 rows solved in 5120 dimensions, where a ridge fit separates almost any labelling -- and this kit was fitted once and served once. gemma4's operator by contrast carries live served measurements and a held-out split in its own meta (delivered 552/675, leak 16/234, incorpus_holdout74_vs_leak378 0.9727) and its kit ships an alternate marked 'served, measured and rolled back'. gemma4 went through serve-and-measure repeatedly and the survivor shipped. A re-fit that keeps that loop closed will produce another in-sample 0.9974 that predicts nothing about serve time.",
-    "No canaries. A canary pins a measured verdict so a later run can detect a different checkpoint; with the gate firing on nothing there is no verdict worth pinning.",
-    "NOT measured on any evaluation corpus. Recall and leak are unknown.",
-    "The policy thresholds (revoke_ceil, hysteresis_thresh, in_context_pivot_floor, s_cat_last_pivot_floor) are inherited from Qwen3.6 and were never recalibrated, so the mid/late veto and rescue paths are unvalidated on this model.",
+    "THIS KIT AS SHIPPED DOES NOT GATE, and the cause is now MEASURED rather than hypothesised: the category direction was fitted on transformers activations and scores at chance under vLLM (AUC 0.5893 against its own fit references, 0.5500 against harmless), while the refusal direction at L43 transfers cleanly (31/31 harmful over the 1.50 floor, 0/15 harmless). See measured_live. Refitting the category direction on vLLM's own activations at the same L39 gives 0.9526 held-out recall, so the fix is a re-fit in the serving geometry, not a new layer and not a new corpus.",
+    "LEAK IS NOT MEASURED for the re-fit. Held-out recall of 0.9615 at L51 is not a gating result on its own -- a direction that fires on everything also scores high recall -- and the only negatives in that run were the 140 the fit used to set tau, whose 11/140 is pinned by the R3 rule rather than measured. CatQA, WMDP-bio, SOSBench-bio and harmless leak are all pending.",
+    "SELECTION, not just fitting: the in-sample AUC is 0.99+ at ALL 64 layers, including layers whose held-out recall is 0.21. It ranks nothing and is not evidence of anything. The shipped 0.9974 belongs to this class.",
+    "The layer for the re-fit would be chosen on cysecbench_val_675, and taking the best of 64 layers biases that number upward: at n=675 the standard error is 0.0074, so the top ten layers are within noise of each other. cysecbench_test_675 is disjoint from every corpus used here and has deliberately NOT been touched, so one clean measurement remains available.",
+    "No canaries. A canary pins a measured verdict so a later run can detect a different checkpoint; with the shipped gate firing on nothing there is no verdict worth pinning. The re-fit must produce them.",
+    "NOT measured on any evaluation corpus with a deployed operator. The numbers above are offline scores over harvested activations, not a served kit's recall and leak.",
+    "The policy thresholds (revoke_ceil, hysteresis_thresh, in_context_pivot_floor, s_cat_last_pivot_floor) are inherited from Qwen3.6 and were never recalibrated here, so the mid/late veto and rescue paths are untested on this model.",
+    "The refusal factor's mu_hm/sd_hm are the transformers-capture values. They work live, but they have not been re-measured on vLLM activations.",
     "bundle_probe_layers is empty, so there is no middle/late candidate consensus for this family."
   ],
   "serve": {

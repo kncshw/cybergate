@@ -10,38 +10,35 @@ from ..qwen36.family import Qwen36Family
 class Qwen38Family(Qwen36Family):
     """Qwen3.8-27B: 27B dense, 64 layers, hybrid full/linear attention. **Does not gate.**
 
-    `verified_live = False` and it is not decoration. Both factors were fitted in the serving
-    render and both look sound offline -- category AUC 0.9974 with 100/100 fit positives clearing
-    tau, refusal `sep` 1.1239 with `mu_hm_cos` +0.000866 and 681/681 harmful rows above the 1.50
-    floor. Every one of those numbers is IN-SAMPLE, on 240 rows in 5120 dimensions, where a ridge
-    fit separates almost any labelling. Served under vLLM on 2026-11-02 the same prompts scored
-    **+0.02 to +0.05 against +0.20 in the capture**, and nothing fired.
+    `verified_live = False`, and the reason is now measured rather than hypothesised. Measured
+    live on 2026-11-02/03, A100 80GB, vLLM 0.32.0, bf16, serving render:
 
-    The cause is **not established**. Held identical and verified between capture and serve: the
-    render, the same 35 token ids, `span_method=exact_token_markers(qwen38)` at (14, 26), the
-    operator and tau. Two candidates remain, distinguishable by one measurement:
+    * the **category** direction scores at **chance** -- AUC 0.5893 against 14 of its own 140 fit
+      references and 0.5500 against 15 harmless prompts, using 12 of its own 100 fit positives,
+      having claimed 0.9974 in-sample. Both sides of that comparison are the serving render and
+      the direction is the shipped one, so it is not a render artifact. No layer rescued it.
+    * the **refusal** direction at L43 **transfers cleanly** -- 31/31 harmful prompts above the
+      1.50 floor (mean z +4.15), 0/15 harmless (mean -0.92, max -0.187). Compressed against the
+      fit, cos 0.168 against the 0.537 the fit implies, but the floor sits inside a 2.8-z gap.
 
-    1. **Layer numbering.** transformers L39 may not be vLLM L39. This checkpoint is a composite
-       `Qwen3_5ForConditionalGeneration` whose decoder is nested under `text_config` /
-       `language_model`, which is the shape that produces a *large* offset. The 20-layer sweep
-       that was run covered L30-L49, so it bounds the search to +/-10 around L39 and does not
-       exclude this. An earlier version of this docstring said it did.
-    2. **The activations.** The capture ran transformers' reference PyTorch fallbacks for
-       `causal_conv1d` and `chunk_gated_delta_rule`; the serve ran vLLM's fused Gated DeltaNet
-       kernels. Two implementations of a *recurrent* operator, compounding over 48 layers.
+    The cause is the **capture geometry**, and the discriminating evidence is that refitting at
+    the *same* L39 on vLLM's own pooled activations -- same 240 rows, same ridge, same R3
+    threshold -- takes held-out recall from chance to **0.9526** on 675 CySecBench prompts the fit
+    never saw. Depth does not explain it (L43 is deeper than L39 and works), and overfitting does
+    not explain it (the same 240 rows generalise once fitted in the right geometry). What the
+    in-sample 0.9974 was, is nothing: the in-sample AUC is 0.99+ at **all 64 layers**, including
+    layers whose held-out recall is 0.21.
 
-    gemma4 was **also** captured through `transformers` (`capture_hf_v2.py`) and transfers fine,
-    so "transformers vs vLLM" is not by itself the explanation. The asymmetry is that gemma4 is
-    standard attention throughout: there is no such operator in it to implement two ways.
-
-    `CYBERGATE_CROSS_LAYER_DIAG=1` scores this direction at every layer and tells the two apart.
-    If (2), the fix is to re-fit from vLLM's own pooled vectors -- `CYBERGATE_DUMP_ACTS_DIR` plus
-    `scripts/fit/acts_from_serving.py` -- so the capture engine and the serving engine are the
-    same program.
+    The fix is `scripts/fit/harvest_vllm_acts.py` then `scripts/fit/sweep_layers_from_dump.py`.
+    **It is not finished**: leak has not been measured on any out-of-sample non-target set, so
+    0.9615 at L51 is a recall number without a false-positive number beside it and is not yet a
+    gating result. `kits/qwen38/MANIFEST.json` carries the full measurements and what is missing.
 
     Also unverified, separately: the policy thresholds (`revoke_ceil`, `hysteresis_thresh`,
     `in_context_pivot_floor`, `s_cat_last_pivot_floor`) are Qwen3.6's, calibrated at its L15/L28
     and never recalibrated here, so the mid/late veto and rescue paths are untested on this model.
+    The refusal factor's `ref_mu_hm`/`ref_sd_hm` are the transformers-capture values; they work
+    live but have not been re-measured on vLLM activations.
     """
 
     name = "qwen38"
