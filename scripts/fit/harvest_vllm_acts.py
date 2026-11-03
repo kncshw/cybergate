@@ -80,6 +80,10 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--probe-layer", type=int, default=0,
                     help="which L<n>.bin to watch for the per-request row check")
+    ap.add_argument("--wipe-dump", action="store_true",
+                    help="delete every .bin in --dump-dir first. vLLM's startup profiling runs "
+                         "dummy forward passes that fire the dump hook, so a freshly started "
+                         "server leaves rows behind before any request is sent.")
     args = ap.parse_args()
 
     order, splits = [], []
@@ -119,9 +123,18 @@ def main() -> int:
             time.sleep(0.05)
         return rows()
 
+    if args.wipe_dump:
+        wiped = [p for p in dump.glob("*.bin")]
+        for p in wiped:
+            p.unlink()
+        print(f"wiped {len(wiped)} .bin file(s) from {dump}")
     if rows():
-        raise SystemExit(f"{probe} already holds {rows()} rows. Row i must be request i, so this "
-                         f"dump cannot be appended to -- use an empty --dump-dir.")
+        raise SystemExit(
+            f"{probe} already holds {rows()} rows. Row i must be request i, so this dump cannot "
+            f"be appended to.\nUsually these are vLLM's startup profiling passes -- it runs dummy "
+            f"forwards that fire the dump hook before any request arrives. Re-run with "
+            f"--wipe-dump, which clears every layer together; deleting some files by hand leaves "
+            f"the layers at different lengths.")
 
     t0 = time.time()
     for i, r in enumerate(order):
