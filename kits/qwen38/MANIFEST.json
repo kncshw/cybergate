@@ -12,7 +12,8 @@
   },
   "files": {
     "operator": "qwen38_L39_M1_serving.json",
-    "refusal_direction": "qwen38_L43_refusal_dir_serving.json"
+    "refusal_direction": "qwen38_L43_refusal_dir_serving.json",
+    "candidate_operator_not_served": "qwen38_L55_M1_vllm.json"
   },
   "gate": {
     "layer": 39,
@@ -76,7 +77,7 @@
       "of": 64,
       "note": "multi_layer_scores held X0..X43 only. The record is published when the refusal monitor completes at ref_layer=43, so layers above it have not run yet. The dump is unaffected -- it writes per layer straight to disk -- so 44-63 are recoverable offline. Any 'no layer reproduces this' conclusion drawn from the record alone is bounded to 0..ref_layer."
     },
-    "provenance": "TRANSCRIBED, not retained. These figures were read off the serving session's terminal output; the raw artifacts -- the decision records, the activation dump, the replay order file and the fitted operator -- exist only on the Colab VM that produced them and are not in this repository. Nothing here has been re-derived from a retained record. Treat every number in this block as a reported measurement rather than a reproducible one until the session's small artifacts (the sweep output, the order file, the operator) are committed under a records directory. The commands that produce them are in scripts/fit/, so a re-run is the way to confirm any of this.",
+    "provenance": "MIXED. The re-fit figures are now RETAINED: qwen38_L55_M1_vllm.json carries its own holdout_recall, leak_splits, in_sample_auc and corpus counts, written by the fit rather than transcribed, and records/harvest_2026-11-02_corpus_digest.json carries the per-split counts and text hashes of the replay. Everything else in this block is still TRANSCRIBED from a terminal: the live scores on the five fit positives, the refusal separation, the 44-of-64 layer bound and the 64-layer sweep table have no retained artifact. The replay order file is deliberately not committed -- it holds the full text of 3284 prompts including CySecBench, CatQA, WMDP and SOSBench rows, which this repository does not redistribute. The activation dump, the decision records and the sweep table are reproducible from scripts/fit/.",
     "refit_leak_sweep": {
       "basis": "3284 prompts replayed at the live server with the dump armed (24 min), then the M1 ridge solver and the R3 rule at every one of the 64 layers. Fitted on 100 positives and 140 references; recall held out on cysecbench_val_675; leak on catqa_test_234, wmdp_bio_test_637, sosbench_bio_498 and 1000 harmless. Positive control passed on all 3284 rows at 1.16e-05.",
       "candidate_L55": {
