@@ -133,6 +133,12 @@ the gate *holds* comes back byte-identical to the pristine model.
 `notebooks/serve_kit_colab.ipynb` is the same serve without the conversation, for verifying
 a kit. One 26B-class model needs an 80 GB card in bf16.
 
+Run `notebooks/render_preflight.ipynb` first. It needs no GPU, no vllm and no weights -- only a
+tokenizer -- and it answers the one question a serve cannot: of all the prompt renders this
+deployment produces, which ones does `is_baseline_prefill` publish? Exactly one must. A kit that
+publishes none serves perfectly and gates nothing; a kit that publishes two overwrites its own
+decision and, with a dump running, appends a second unlabelled row.
+
 ## Kits, and why canaries exist
 
 Everything needed to serve and verify one model lives in `kits/<name>/`, and nothing belonging to
@@ -261,8 +267,9 @@ src/cybergate_plugin/     drop-in facade: the --middleware path and entry point
 kits/                     one self-contained deployment kit per served model
 scripts/fit/              fit a new model's two directions
 scripts/serving/          serve and verify
-notebooks/                Colab: qwen38_live_chat (talk to it), serve_kit_colab (verify
-                          a kit), qwen38_colab (fit one)
+notebooks/                Colab: render_preflight (does the gate observe anything? CPU
+                          only, run it first), qwen38_live_chat (talk to it),
+                          serve_kit_colab (verify a kit), qwen38_colab (fit one)
 tests/unit/               policy regressions R1-R14, keys, families, kit binding, purity
 tests/equivalence/        differential suites against the vendored reference implementation
 docs/                     ARCHITECTURE, PROCESS_TOPOLOGY, EVALUATOR_QUICKSTART, DECODE_CALIBRATION
