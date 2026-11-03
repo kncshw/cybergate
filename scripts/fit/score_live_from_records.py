@@ -49,6 +49,11 @@ def main() -> int:
     ap.add_argument("--ipc-dir", required=True)
     ap.add_argument("--target", action="append", default=[], metavar="SPLIT",
                     help="repeatable: splits where firing is CORRECT; the rest are leak")
+    ap.add_argument("--family", default=None,
+                    help="registered family name. Needed to know whether the mid/late rescue "
+                         "exists at all: with no candidate-layer bundle there is no rescue, and "
+                         "the `rescued` heuristic would otherwise miscount near-threshold "
+                         "crossings as rescues.")
     ap.add_argument("--out", default=None, help="write the counts here as JSON")
     args = ap.parse_args()
 
@@ -75,6 +80,17 @@ def main() -> int:
               "pooled the wrong tokens for that request.")
     print()
 
+    no_rescue = False
+    if args.family:
+        from cybergate.families import family_by_name
+        fam = family_by_name(args.family)
+        no_rescue = not fam.bundle_probe_layers
+        print(f"family {fam.name}: bundle_probe_layers={fam.bundle_probe_layers or '()'} -> "
+              f"mid/late rescue {'DISABLED, so rescued is 0 by construction' if no_rescue else 'active'}\n")
+    else:
+        print("no --family given: the `rescued` column is a heuristic (score within 0.0025 of "
+              "tau)\nand will miscount near-threshold crossings on a family with no rescue.\n")
+
     print(f"{'split':<14} {'n':>6} {'missing':>8} {'fired':>7} {'rate':>8} "
           f"{'veto-adj':>9} {'rate':>8} {'rescued':>8}  role")
     out = {}
@@ -86,9 +102,17 @@ def main() -> int:
         fired = [r for r in recs if r.get("fired")]
         # A rescued row is stamped with a synthetic score of tau + 0.002, so it fires without
         # having crossed the threshold on its own. The gemma4 kit reports this split too.
-        rescued = [r for r in fired
-                   if r.get("score") is not None and r.get("threshold") is not None
-                   and r["score"] < r["threshold"] + 0.0025]
+        #
+        # This is a HEURISTIC and it cannot tell a rescued row from a threshold crossing that
+        # happens to land within 0.0025 of tau. On a family with no candidate-layer bundle there
+        # is no rescue mechanism at all, so every such row is a near-threshold crossing and the
+        # column must read 0 rather than inventing a mechanism that is not running. qwen38 is
+        # exactly that family (`bundle_probe_layers = ()`), and an earlier revision reported 11
+        # "rescued" rows for it.
+        rescued = [] if no_rescue else [
+            r for r in fired
+            if r.get("score") is not None and r.get("threshold") is not None
+            and r["score"] < r["threshold"] + 0.0025]
         veto = [r for r in fired if (r.get("s_ref_z") or 0.0) >= REF_FLOOR]
         role = "TARGET" if split in args.target else "leak"
         print(f"{split:<14} {len(recs):>6} {missing.get(split, 0):>8} {len(fired):>7} "

@@ -308,3 +308,10 @@ measurement as a layer sweep: the deployed path adds the mid/late rescue, the re
 its 558 fires come from the rescue, so an offline recall is not comparable to them. Reports both
 the as-recorded and the veto-adjusted basis, counts missing records rather than dropping them, and
 separates rescued fires from threshold crossings.
+
+## `write_canaries_from_records.py` — pin the verdicts a served gate produced
+
+A canary pins a measured verdict so a later run can tell it is serving a different checkpoint, and
+that only works if the numbers come from the deployed gate. `--from-target` and `--from-leak`
+default to the **fit** corpora: a canary carries its prompt text, and this repository does not
+redistribute CySecBench, CatQA, WMDP or SOSBench.
