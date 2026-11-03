@@ -93,6 +93,11 @@ def main() -> int:
     # Required, not optional. Ranking layers on an in-sample number is the mistake this
     # script exists to prevent, and a missing holdout used to rank on NaN and pick layer 0.
     ap.add_argument("--holdout", required=True, help="split of positives the fit never sees")
+    ap.add_argument("--leak", action="append", default=[], metavar="SPLIT",
+                    help="repeatable: NON-TARGET splits the fit never sees. Recall without a "
+                         "leak number is not a result -- a direction that fires on everything "
+                         "scores recall 1.0. Given any --leak, layers rank by recall minus the "
+                         "worst leak rather than by recall alone.")
     ap.add_argument("--layers", default=None, help="e.g. '8,11,25,34,39'; default every layer found")
     ap.add_argument("--k", type=int, default=15)
     ap.add_argument("--ipc-dir", default=None, help="enables the positive control")
@@ -153,16 +158,38 @@ def main() -> int:
         s_h = cosines(X[hold[0]:hold[1]], c_unit)
         recall_out = float(np.mean(s_h >= tau))
         margin = float(np.median(s_h) - tau)
-        table.append((recall_out, auc_in, recall_in, tau, L, margin, c_unit))
+        leaks = {}
+        for name in args.leak:
+            a, b = idx[name]
+            leaks[name] = float(np.mean(cosines(X[a:b], c_unit) >= tau))
+        rank = recall_out - (max(leaks.values()) if leaks else 0.0)
+        table.append((rank, recall_out, auc_in, recall_in, tau, L, margin, leaks, c_unit))
 
     table.sort(reverse=True)
-    print(f"{'layer':>5} {'HELD-OUT recall':>16} {'in-sample AUC':>14} "
-          f"{'in-sample recall':>17} {'tau':>11} {'median-tau':>11}")
-    for ro, ai, ri, tau, L, mg, _ in table:
-        print(f"{L:>5} {ro:>16.4f} {ai:>14.4f} {ri:>17.4f} {tau:>+11.6f} {mg:>+11.6f}")
+    head = (f"{'layer':>5} {'HELD-OUT recall':>16}"
+            + "".join(f" {('leak ' + n)[:13]:>13}" for n in args.leak)
+            + f" {'in-sample AUC':>14} {'tau':>11} {'median-tau':>11}")
+    print(head)
+    for rk, ro, ai, ri, tau, L, mg, lk, _ in table:
+        print(f"{L:>5} {ro:>16.4f}"
+              + "".join(f" {lk[n]:>13.4f}" for n in args.leak)
+              + f" {ai:>14.4f} {tau:>+11.6f} {mg:>+11.6f}")
+    if args.leak:
+        print("\nranked by held-out recall minus the WORST leak; raw recall is the second column")
+    else:
+        print("\nNO --leak SPLIT GIVEN. Recall alone cannot distinguish a working direction from "
+              "one\nthat fires on everything. Treat this ranking as provisional.")
+    n_h = hold[1] - hold[0]
+    se = (table[0][1] * (1 - table[0][1]) / n_h) ** 0.5
+    print(f"standard error on held-out recall at n={n_h}: {se:.4f}. Layers within ~2x that of each "
+          f"other\nare not distinguishable, and taking the best of {len(table)} biases it upward -- "
+          f"choose the layer\nhere, then measure once on a split that was never used to choose "
+          f"anything.")
 
-    ro, ai, ri, tau, L, mg, c_unit = table[0]
-    print(f"\nbest by held-out recall: L{L}  held-out {ro:.4f}  in-sample AUC {ai:.4f}")
+    rk, ro, ai, ri, tau, L, mg, lk, c_unit = table[0]
+    print(f"\nbest: L{L}  held-out recall {ro:.4f}"
+          + ("  leaks " + " ".join(f"{n}={lk[n]:.4f}" for n in args.leak) if args.leak else "")
+          + f"  in-sample AUC {ai:.4f}")
     if ai - ro > 0.25:
         print(f"  NOTE: the in-sample AUC exceeds held-out recall by {ai - ro:.3f}. That gap is "
               f"the\n        overfitting this script exists to expose; treat {ai:.4f} as "
@@ -176,6 +203,7 @@ def main() -> int:
                      "fitted_by": "scripts/fit/sweep_layers_from_dump.py",
                      "serve_thresh_rule": "R3", "thresholds_all": all_scores,
                      "holdout_split": args.holdout, "holdout_recall": ro,
+                     "leak_splits": {n: lk[n] for n in args.leak},
                      "in_sample_auc": ai, "in_sample_recall": ri})
         pathlib.Path(args.out).write_text(json.dumps(
             {"c": [float(x) for x in c_unit], "thresh": tau, "meta": info}))

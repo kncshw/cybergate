@@ -281,3 +281,9 @@ the held-out number, so the gap between them is visible.
 
 `acts_from_serving.py` remains the route for feeding a dump to `fit_refusal.py`, which this does
 not cover.
+
+`--leak` is not optional in practice. Recall alone cannot tell a selective direction from one that
+fires on everything, so with no leak split the sweep says its ranking is provisional. Given leak
+splits it ranks by recall minus the worst leak. It also prints the standard error on held-out
+recall and says plainly that taking the best of 64 layers biases that number upward -- choose the
+layer on this split, then measure once on one that was never used to choose anything.
