@@ -128,6 +128,16 @@ def main() -> int:
         for p in wiped:
             p.unlink()
         print(f"wiped {len(wiped)} .bin file(s) from {dump}")
+    # The row check watches ONE file. If the server narrowed the dump with
+    # CYBERGATE_DUMP_ACTS_LAYERS and that file is not among them, the check can never pass, so
+    # say so in a second instead of after a request.
+    present = sorted(q.name for q in dump.glob("*.bin"))
+    if present and probe.name not in present:
+        raise SystemExit(
+            f"--probe-layer {args.probe_layer} watches {probe.name}, which this dump does not "
+            f"contain.\nPresent: {present}\nThe watched layer must be one the server actually "
+            f"dumps -- the per-request row check is what guarantees row i is request i. Pass "
+            f"--probe-layer with one of the layers above.")
     if rows():
         raise SystemExit(
             f"{probe} already holds {rows()} rows. Row i must be request i, so this dump cannot "
@@ -146,9 +156,17 @@ def main() -> int:
                              f"unknown from here. Empty {dump} and start over; do not resume.")
         after = wait(before + 1)
         if after == before == 0:
+            others = sorted(q.name for q in dump.glob("*.bin"))
+            if others:
+                raise SystemExit(
+                    f"ABORT at request {i} ({r['key']}): the request succeeded and the dump grew, "
+                    f"but not {probe.name}.\nPresent: {others}\nThe server IS dumping to this "
+                    f"directory -- it is not dumping layer {args.probe_layer}. Pass --probe-layer "
+                    f"with one of the layers above.")
             raise SystemExit(
-                f"ABORT at request {i} ({r['key']}): the request succeeded but {probe} was never "
-                f"written.\n--dump-dir says where to WATCH; the server writes to whatever "
+                f"ABORT at request {i} ({r['key']}): the request succeeded but nothing was "
+                f"written to {dump}.\n--dump-dir says where to WATCH; the server writes to "
+                f"whatever "
                 f"CYBERGATE_DUMP_ACTS_DIR was set to when it STARTED, and changing --dump-dir does "
                 f"not move it. Check the serve log:\n    grep ACTDUMP <serve log>\nand pass that "
                 f"path, or restart the server with the path you want.")
