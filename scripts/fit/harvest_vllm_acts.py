@@ -23,6 +23,14 @@ Serve with the dump armed and unrestricted, then:
       --model Qwen/Qwen3.8-27B --hidden 5120 --out /content/fit_order.json
 
 The `--out` file records the replay order, which is what makes the dump interpretable at all.
+
+**The dump stays live as long as the server does.** The order file and the dump agree only at the
+moment this script finishes; every request afterwards appends another row. One interactive prompt
+sent to a still-running server left four files at 4,135 rows against an order file of 4,134, and
+the fit scripts then refused them -- correctly, since a row count that does not match the labels
+cannot be sliced safely. Tear the server down before archiving a dump, or truncate to the order
+file's row count: appends only ever add at the end, so the rows this script verified are still
+intact in front of the stray ones.
 """
 from __future__ import annotations
 

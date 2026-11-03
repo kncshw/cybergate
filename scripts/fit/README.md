@@ -263,7 +263,9 @@ live at its own gate layer against **0.9974** claimed in-sample, measured on 12 
 positives against 14 of its own fit references.
 
 Row `i` must be request `i`, so it sends one request at a time and verifies the dump grew by
-exactly one row after each. On any anomaly it aborts instead of continuing — a gap mislabels every
+exactly one row after each. The dump also stays live as long as the server does: anything sent
+afterwards appends more rows, so tear the server down before archiving a dump or truncate it
+back to the order file's row count. On any anomaly it aborts instead of continuing — a gap mislabels every
 row after it and nothing downstream can detect that. `--out` records the replay order, which is
 what makes the dump interpretable.
 
