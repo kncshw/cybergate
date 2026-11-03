@@ -66,7 +66,8 @@
       "reported": 44,
       "of": 64,
       "note": "multi_layer_scores held X0..X43 only. The record is published when the refusal monitor completes at ref_layer=43, so layers above it have not run yet. The dump is unaffected -- it writes per layer straight to disk -- so 44-63 are recoverable offline. Any 'no layer reproduces this' conclusion drawn from the record alone is bounded to 0..ref_layer."
-    }
+    },
+    "provenance": "TRANSCRIBED, not retained. These figures were read off the serving session's terminal output; the raw artifacts -- the decision records, the activation dump, the replay order file and the fitted operator -- exist only on the Colab VM that produced them and are not in this repository. Nothing here has been re-derived from a retained record. Treat every number in this block as a reported measurement rather than a reproducible one until the session's small artifacts (the sweep output, the order file, the operator) are committed under a records directory. The commands that produce them are in scripts/fit/, so a re-run is the way to confirm any of this."
   },
   "known_gaps": [
     "THIS KIT AS SHIPPED DOES NOT GATE, and the cause is now MEASURED rather than hypothesised: the category direction was fitted on transformers activations and scores at chance under vLLM (AUC 0.5893 against its own fit references, 0.5500 against harmless), while the refusal direction at L43 transfers cleanly (31/31 harmful over the 1.50 floor, 0/15 harmless). See measured_live. Refitting the category direction on vLLM's own activations at the same L39 gives 0.9526 held-out recall, so the fix is a re-fit in the serving geometry, not a new layer and not a new corpus.",
