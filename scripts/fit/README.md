@@ -287,3 +287,24 @@ fires on everything, so with no leak split the sweep says its ranking is provisi
 splits it ranks by recall minus the worst leak. It also prints the standard error on held-out
 recall and says plainly that taking the best of 64 layers biases that number upward -- choose the
 layer on this split, then measure once on one that was never used to choose anything.
+
+## `score_op_from_dump.py` — what does an operator we already have do on these activations?
+
+Scores an existing operator's direction over a harvested dump at its own threshold, with the
+splits read from the replay order file. No server needed; the dump already holds the vectors.
+
+It exists because of an error worth not repeating. The first attempt at this measurement used a
+prompt list typed into a notebook cell, and 9 of its 12 "fit positives" were not fit positives at
+all -- they were other-harm prompts, which a working cyber direction is supposed to score low. The
+resulting AUC was therefore indistinguishable from the direction being dead, and it was written
+into a kit manifest as evidence before anyone checked. Reading the splits out of the order file
+removes the opportunity to get this wrong.
+
+## `score_live_from_records.py` — what did the DEPLOYED gate do?
+
+Counts `fired` per corpus from the decision records a served kit published. This is not the same
+measurement as a layer sweep: the deployed path adds the mid/late rescue, the refusal veto, and
+`fired` as the worker publishes it. gemma4's headline numbers come from this measurement and 82 of
+its 558 fires come from the rescue, so an offline recall is not comparable to them. Reports both
+the as-recorded and the veto-adjusted basis, counts missing records rather than dropping them, and
+separates rescued fires from threshold crossings.

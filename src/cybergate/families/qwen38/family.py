@@ -13,10 +13,11 @@ class Qwen38Family(Qwen36Family):
     `verified_live = False`, and the reason is now measured rather than hypothesised. Measured
     live on 2026-11-02/03, A100 80GB, vLLM 0.32.0, bf16, serving render:
 
-    * the **category** direction scores at **chance** -- AUC 0.5893 against 14 of its own 140 fit
-      references and 0.5500 against 15 harmless prompts, using 12 of its own 100 fit positives,
-      having claimed 0.9974 in-sample. Both sides of that comparison are the serving render and
-      the direction is the shipped one, so it is not a render artifact. No layer rescued it.
+    * the **category** direction fires on **none of its own top five fit positives**: live L39
+      scores +0.036978, +0.054872, +0.022492, -0.001360, +0.002108 against its own tau of
+      +0.06295487. (An earlier revision of this docstring reported AUC 0.5893 / 0.5500 here.
+      Those are WITHDRAWN -- the prompt lists behind them were typed rather than read from the
+      corpora, and most of the 'positives' were other-harm prompts. See MANIFEST.json.)
     * the **refusal** direction at L43 **transfers cleanly** -- 31/31 harmful prompts above the
       1.50 floor (mean z +4.15), 0/15 harmless (mean -0.92, max -0.187). Compressed against the
       fit, cos 0.168 against the 0.537 the fit implies, but the floor sits inside a 2.8-z gap.
