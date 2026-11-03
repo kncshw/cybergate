@@ -11,27 +11,42 @@
     "provenance": "reported by the live container at hook install: hidden=5120 layers=64; snapshot 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
   },
   "files": {
-    "operator": "qwen38_L39_M1_serving.json",
+    "operator": "qwen38_L40_M1_vllm.json",
     "refusal_direction": "qwen38_L43_refusal_dir_serving.json",
-    "candidate_operator_not_served": "qwen38_L55_M1_vllm.json"
+    "superseded_operator": "qwen38_L39_M1_serving.json",
+    "rejected_operator_gate_above_ref_layer": "qwen38_L55_M1_vllm.json"
   },
   "gate": {
-    "layer": 39,
+    "layer": 40,
     "pool": "mean_user",
-    "threshold": 0.06295487038076206,
+    "threshold": null,
     "threshold_rule": "R3 (m_budget=11)",
     "in_sample": false,
-    "threshold_rule_meaning": "The 12th-largest score on the 140 fit-reference prompts. Measured here: 12/140 reference rows clear it, exactly as specified."
+    "threshold_rule_meaning": "The 12th-largest score on the 140 fit-reference prompts, computed on vLLM's own activations -- the same rule in the geometry the gate scores in. R3 never sees an evaluation corpus.",
+    "layer_chosen_by": "Best held-out recall minus worst leak among layers BELOW ref_layer, over the 64-layer sweep in records/harvest_2026-11-02_layer_sweep.txt. NOT by in-sample AUC, which is 0.99+ at every layer in this stack including layers at 0.21 held-out recall.",
+    "constraint": "The gate layer must be BELOW ref_layer (43). refusal_monitor attaches s_ref_z to the record the category probe already wrote, so a gate above ref_layer leaves the monitor firing first with nothing pending: no s_ref_z on the record, no multi_layer_scores, no mid/late rescue, and the two-factor veto reading None -- silently. gemma4 is 16/21 and qwen36 is 21/28; nothing in the code enforces it. L55 is the best layer in the sweep (0.9230 recall at 0.0769 CatQA leak) and is unusable for this reason. It is retained as files.rejected_operator_gate_above_ref_layer."
   },
   "fit": {
     "method": "M1_subcat_Tridge_lam16",
     "render": "serving",
-    "render_note": "Fitted with --render serving, NOT the `fit` render the shipped kits use. Qwen3.8's chat template injects a 36-token reasoning-effort preamble that the serving path does not reproduce, so a `fit`-render operator is measured in a render the server never produces. Fitting in the serving render removed that confound and did not fix the kit; see known_gaps.",
+    "capture_engine": "vLLM 0.32.0 -- the engine that serves it",
+    "capture_note": "Captured by replaying the fit corpora at a live vLLM server with the activation dump armed, not through transformers. That is the whole fix: the previous operator was fitted on transformers activations and was not category-selective under vLLM, scoring SOSBench-bio prompts as highly as its own cyber positives. See measured_live.",
     "n_pos": 100,
     "n_neg": 140,
-    "category_quality": "AUC 0.9974 in-sample; 100/100 fit positives clear tau; 12/140 reference rows clear it; separation +0.1534 (pos mean +0.1597, neg mean +0.0063).",
-    "refusal_quality": "sep 1.1239; mu_hm_cos +0.000866 (orthogonalization holds); sd_hm_cos 0.040170; z_harm_mean 13.34; 681/681 harmful and 76/1000 harmless rows reach the 1.50 sigma floor. Fitted on 681 harmful + 1000 harmless rows, which is NOT the 692/554 convention the shipped kits use, so this sigma scale is not comparable to gemma4's or qwen36's.",
-    "fitted_by": "notebooks/qwen38_colab.ipynb, 2026-11-02, A100 80GB, bf16"
+    "n_neg_subcategories": 14,
+    "held_out_recall": 0.8785185185185185,
+    "held_out_split": "cysecbench_val_675, disjoint from the fit corpora",
+    "leak_offline": {
+      "catqa_234": 0.0983,
+      "wmdp_bio_637": 0.0094,
+      "sos_bio_498": 0.0,
+      "harmless_1000": 0.012
+    },
+    "in_sample_auc": 0.9988,
+    "in_sample_auc_note": "Reported only so it is not mistaken for evidence. It is 0.99+ at all 64 layers.",
+    "refusal_quality": "Unchanged and NOT refitted: the L43 refusal direction transfers as captured -- 31/31 harmful prompts above the 1.50 floor at mean z +4.15, 0/15 harmless at mean -0.92. Its mu_hm/sd_hm are still the transformers-capture values; they work live but have not been re-measured on vLLM activations. Fitted on 681 harmful + 1000 harmless rows, which is NOT the 692/554 convention the shipped kits use, so this sigma scale is not comparable to gemma4's or qwen36's.",
+    "fitted_by": "scripts/fit/harvest_vllm_acts.py + scripts/fit/sweep_layers_from_dump.py, 2026-11-02, A100 80GB, bf16",
+    "gate_layer_note": "L40. L55 scored higher (0.9230 at 0.0769) but sits above ref_layer; see gate.constraint."
   },
   "measured_live": {
     "basis": "A100 80GB, vLLM 0.32.0, bf16, --enforce-eager --no-enable-prefix-caching, serving render (cybergate_mode=baseline, no system prompt, max_tokens=1, temp=0). Every row matched to its decision record by exact prompt sha. 2026-11-02/03.",

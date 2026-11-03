@@ -60,8 +60,28 @@ class Qwen38Family(Qwen36Family):
     num_layers = 64
     kit_name = "qwen38"
 
-    expected_gate = (39, "mean_user")
-    default_op_names = ("qwen38_L39_M1_serving.json",)
+    # L55, fitted on vLLM's OWN activations and chosen on held-out recall with leak measured.
+    # L39 was the original choice, made on an in-sample AUC of 0.9985; refitted properly it
+    # reaches 0.9526 recall but leaks 0.2104 into WMDP-bio, which makes it one of the three
+    # worst layers in this stack for selectivity. The in-sample AUC was 0.99+ at all 64 layers
+    # and could not have shown that. `qwen38_L39_M1_serving.json` stays in the kit as the
+    # record of it, and as the positive control the dump diagnostics compare against.
+    # L40, fitted on vLLM's OWN activations and chosen on held-out recall with leak measured.
+    #
+    # **The gate layer must sit BELOW `ref_layer`.** `refusal_monitor` attaches `s_ref_z` to the
+    # record the category probe already wrote (`decision = pending.get((q_start, q_end))`, and
+    # `is_true_prefill` requires it to exist). With the gate above `ref_layer` the monitor fires
+    # first in the forward pass, finds nothing pending, and takes the decode path: no `s_ref_z`
+    # on the record, no `multi_layer_scores`, no mid/late rescue, and the two-factor veto gets
+    # `None` -- silently. gemma4 is 16/21 and qwen36 is 21/28, so every shipped kit satisfies
+    # this, but nothing enforced it. L55 scores better on the sweep (0.9230 recall at 0.0769
+    # CatQA) and is unusable for exactly this reason; see kits/qwen38/MANIFEST.json.
+    #
+    # L39 was the original choice, made on an in-sample AUC of 0.9985. Refitted properly it
+    # reaches 0.9526 recall but leaks 0.2104 into WMDP-bio -- one of the three worst layers in
+    # this stack for selectivity, which an in-sample AUC of 0.99+ at every layer could not show.
+    expected_gate = (40, "mean_user")
+    default_op_names = ("qwen38_L40_M1_vllm.json",)
     default_ref_dir_name = "qwen38_L43_refusal_dir_serving.json"
     default_bundle_name = None
 
