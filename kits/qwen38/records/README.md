@@ -23,8 +23,20 @@ evaluation corpora -- see the README. The digest lets a later run prove it repla
 corpora in the same order without shipping them, which is the same approach `kits/gemma4` takes
 with its fit prompts' md5s.
 
+## `harvest_2026-11-02_layer_sweep.txt`
+
+The full 64-layer sweep exactly as `sweep_layers_from_dump.py` printed it, including its own
+positive control (the dumped rows reproduce the serving hook's recorded `X39_mean_user` to
+1.16e-05 across all 3,284 rows). Every figure quoted from it in `../MANIFEST.json` was verified
+against this file line by line, 0 mismatches.
+
+It is the evidence for the finding that matters most here: **the high-recall layers are the leaky
+ones.** L39 leaks 0.2104 into WMDP-bio and L25 leaks 0.2402, at recall 0.9526 and 0.9422, while
+L55 reaches 0.9230 at 0.0047. The original fit chose L39 on an in-sample AUC of 0.9985, and the
+in-sample AUC column in this table is 0.99+ at all 64 layers -- including layers whose held-out
+recall is 0.21. It could not have distinguished any of them.
+
 ## What is still not retained
 
-The 4.1 GB activation dump, the decision records, and the 64-layer sweep table. The dump and the
-records are reproducible from `scripts/fit/harvest_vllm_acts.py`; the sweep table is reproducible
-from `scripts/fit/sweep_layers_from_dump.py` over the same dump. Neither is in this repository.
+The 4.1 GB activation dump and the decision records. Both are reproducible from
+`scripts/fit/harvest_vllm_acts.py`. Neither is in this repository.
