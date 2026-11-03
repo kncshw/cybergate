@@ -73,6 +73,13 @@ class Qwen36Family(ModelFamily):
     default_pre = 14
     default_suf = 5
 
+    # 2b. BEHAVIOUR-PRESERVING. This arm read `suffix_len in (self.default_suf, 9)` until the
+    # accepted set was decoupled from `default_suf`, and `(5, 9)` is what that evaluated to here.
+    # It has NOT been re-measured against Qwen3.6's own chat template -- qwen38's inherited `5`
+    # turned out to match no render of its template at all. Run
+    # `notebooks/render_preflight.ipynb` with KIT="qwen36" before trusting the 5; it needs no GPU.
+    baseline_suffix_lens = (5, 9)
+
     # 3. packed-batch segmentation -- no BOS rule in the canonical package for this family
     bos_token_id = None
 
@@ -161,8 +168,8 @@ class Qwen36Family(ModelFamily):
         if span_method == "full_sequence_fallback":
             return True
         if "prefix_cached" in span_method:
-            return bool(suffix_len in (self.default_suf, 9))
-        return bool(u1_start > 3 and suffix_len in (self.default_suf, 9))
+            return suffix_len in self.baseline_suffix_lens
+        return bool(u1_start > 3 and suffix_len in self.baseline_suffix_lens)
 
     # =============================================================================================
     # Middle/late consensus

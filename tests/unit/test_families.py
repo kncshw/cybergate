@@ -38,6 +38,7 @@ SHARED_ATTRIBUTES = (
     "span_label",
     "default_pre",
     "default_suf",
+    "baseline_suffix_lens",
     "bos_token_id",
     "fresh_prompt_marker",
     "ref_layer",

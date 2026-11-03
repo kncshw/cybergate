@@ -1,6 +1,8 @@
-"""Qwen3.8-27B. Fitted 2026-11-02 by `notebooks/qwen38_colab.ipynb`. NOT SERVED.
+"""Qwen3.8-27B. Fitted, then served and measured, 2026-11-02 by `notebooks/qwen38_colab.ipynb`.
 
-See the class docstring: both factors fit well and neither transfers to vLLM.
+This docstring read "NOT SERVED ... neither transfers to vLLM" after the refit landed, which
+contradicted both the class docstring below it and `verified_live = True`. The first fit, made on
+`transformers` activations, is the thing that did not transfer; see the class docstring.
 """
 from __future__ import annotations
 
@@ -12,7 +14,9 @@ class Qwen38Family(Qwen36Family):
 
     Served and measured on 2026-11-02, A100 80GB, vLLM 0.32.0, bf16. 4,134 prompts replayed at
     the deployed gate, every row matched by prompt sha, 0 missing, kit check clean without
-    `CYBERGATE_SKIP_KIT_CHECK`:
+    `CYBERGATE_SKIP_KIT_CHECK`, all on the render `middleware._probe_observations` builds for
+    itself (`suffix_len=9`; see `baseline_suffix_lens`), which is the only render this gate ever
+    observes and is the same one the operator was fitted on:
 
     * **CySecBench 587/675 (86.96%)** on the test split, which chose nothing -- not the layer,
       not tau, not the direction. gemma4 delivers 558/675 (82.67%) by the same measurement, and
@@ -40,7 +44,24 @@ class Qwen38Family(Qwen36Family):
     **Known gaps are real and in `kits/qwen38/MANIFEST.json`**: the refusal sigma is still the
     transformers value and the veto costs 90 of 587 fires (veto-adjusted recall 0.7363 against
     gemma4's 0.8193); PKU-cybercrime leaks 220/612 and that is not explained; the decode
-    calibration and the policy thresholds are Qwen3.6's; multi-turn is unmeasured.
+    calibration and the policy thresholds are Qwen3.6's; multi-turn is unmeasured; and a client
+    passing `chat_template_kwargs={"enable_thinking": false}` renders a prefill this predicate
+    cannot distinguish from the observation (see `baseline_suffix_lens`).
+
+    **The two-factor veto is a benign-false-positive filter and nothing more.** Measured at the
+    1.50 floor: `harmless` 12 -> 0, every benign fire removed. But CatQA 23 -> 23, PKU 220 -> 220,
+    `incorpus` 32 -> 32, WMDP-bio 6 -> 6 -- *zero* removed from any harm-adjacent leak corpus.
+    12 of 293 leak fires in total (4.1%) against 90 of 587 true positives (15.3%). The veto
+    requires `s_ref_z >= 1.50`, i.e. that the model was about to refuse; a benign prompt does not
+    elicit a refusal and a burglary prompt does. So recalibrating the refusal sigma cannot move
+    any leak rate, and the category direction's selectivity is the only thing that can.
+
+    **The gate's render is not the render the model answers in.** The probe prepends
+    `build_raw_prompt`'s own 6-token system prompt ("You are a helpful assistant."); this
+    checkpoint's chat template injects a 42-token reasoning-effort directive instead, putting the
+    client's `u1_start` at 45 against the probe's 14. Fit and serving both go through the probe,
+    so the numbers above are internally consistent -- but they are measured on a prefix the served
+    request does not have.
     """
 
     name = "qwen38"
@@ -109,6 +130,34 @@ class Qwen38Family(Qwen36Family):
     default_pre = 14
     default_suf = 5
     bos_token_id = None          # a Qwen prefill has no BOS
+
+    # 2b. MEASURED 2026-11-03 against this checkpoint's own tokenizer, via
+    # `notebooks/render_preflight.ipynb`. The observation prefill is the one
+    # `middleware._probe_observations` renders ITSELF -- `build_raw_prompt(mode="baseline")`, which
+    # emits `empty_thought_block` -- and dispatches to `/v1/completions`. No client kwarg and no
+    # server flag reaches it:
+    #
+    #   probe   build_raw_prompt(mode="baseline")           u1_start=14  suffix_len=9   PUBLISHES
+    #   client  apply_chat_template()                       u1_start=45  suffix_len=7   dropped
+    #   client  apply_chat_template(enable_thinking=True)    u1_start=45  suffix_len=7   dropped
+    #   client  apply_chat_template(enable_thinking=False)   u1_start=45  suffix_len=9   PUBLISHES
+    #
+    # `(14, 9)` is the pair a live decision record carried on 2026-11-02, reproduced exactly.
+    #
+    # This arm used to compute `(self.default_suf, 9)` = `(5, 9)`, which is behaviourally the same
+    # as `(9,)` here: **5 matches no render of this template** -- it is Qwen3.6's `default_suf`,
+    # inherited. Widening it to accept the client's 7 was tried and is WRONG: every ordinary chat
+    # request would then publish a second decision over the generation prefill, overwriting the
+    # probe's record and appending a second unlabelled row to any running dump.
+    #
+    # **Known hazard, not fixed here.** The last row above publishes and should not. A client that
+    # passes `chat_template_kwargs={"enable_thinking": false}` renders a suffix byte-identical to
+    # the probe's, so no predicate over `(u1_start, suffix_len)` can separate them -- `u1_start`
+    # shifts with whatever system message the client sends, since `extract_system_and_user` passes
+    # it through to the probe too. Separating them needs the probe to identify itself rather than
+    # be inferred from its shape. Unreached by the 4,134-prompt validation, which never passed
+    # `chat_template_kwargs`; see kits/qwen38/MANIFEST.json known_gaps.
+    baseline_suffix_lens = (9,)
 
     # UNVERIFIED on this checkpoint: Qwen3.6's policy thresholds, calibrated at its L15/L28.
     # Recalibrate before trusting the mid/late veto or the rescue on this model.

@@ -110,6 +110,28 @@ class ModelFamily:
     default_pre: int = 15
     default_suf: int = 9
 
+    # --- 2b. which prefill is the observation -----------------------------------------------------
+    #: Suffix lengths that identify the **observation** prefill, for a family whose
+    #: `is_baseline_prefill` tests exact membership. Empty means the family uses the base
+    #: `suffix_len <= max_suffix` rule instead.
+    #:
+    #: Measure this from `build_raw_prompt(messages, mode="baseline")`, NOT from the checkpoint's
+    #: `apply_chat_template`. `middleware._probe_observations` renders the observation itself with
+    #: that call and dispatches it to `/v1/completions`, so the client's own chat render never
+    #: reaches this predicate as an observation -- it arrives later as the answer-generation
+    #: prefill, which must be dropped.
+    #:
+    #: Do not derive it from `default_suf`. That constant is the fixed-offset span fallback and
+    #: nothing else; coupling the two means an edit to one silently changes the other, and because
+    #: the exact markers normally match, the fallback never fires and never surfaces the mistake.
+    #:
+    #: **Both ways of getting it wrong are silent.** Too narrow and `publish_decision` drops the
+    #: observation: no record, no dump row, no log line, while the server answers normally. Too
+    #: wide and a later prefill overwrites the published decision and appends a second unlabelled
+    #: fp16 row to any running dump. `notebooks/render_preflight.ipynb` measures both directions
+    #: against a real tokenizer without a GPU.
+    baseline_suffix_lens: tuple[int, ...] = ()
+
     # --- 3. packed-batch segmentation -------------------------------------------------------------
     #: Token id that begins a sequence, used to split a packed prefill batch when vLLM's
     #: `query_start_loc` is unavailable. `None` disables BOS segmentation for the family.

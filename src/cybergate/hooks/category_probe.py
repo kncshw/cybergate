@@ -46,7 +46,104 @@ from ._common import (
 from ._scoring import cosine
 from .bundle_telemetry import attach_bundle_telemetry_hooks
 
-__all__ = ["CURRENT_USER_SPAN", "install_category_probe_hook"]
+__all__ = ["CURRENT_USER_SPAN", "check_baseline_prefill_renders", "install_category_probe_hook"]
+
+#: The single-turn conversation the render check below is measured on.
+_RENDER_PROBE_MESSAGES = [{"role": "user", "content": "ping"}]
+
+#: Every `build_raw_prompt` mode that appends server-authored text after the user's turn. None of
+#: these is an observation: `publish_decision` must drop all of them, or an injected `<think>`
+#: block gets scored as if the user had written it.
+_PASS2_MODES = (
+    "preclosed",
+    "preclosed_no_opener",
+    "closed_loop_step1",
+    "closed_loop_step1b",
+    "closed_loop_step2",
+    "closed_loop_cl2_step2",
+    "sandwich_step1",
+    "sandwich_step2",
+)
+
+
+def check_baseline_prefill_renders(family: ModelFamily, tok: Any) -> list[str]:
+    """Check that `is_baseline_prefill` accepts the observation render and rejects the Pass-2 ones.
+
+    `middleware._probe_observations` renders the observation itself, with
+    `build_raw_prompt(mode="baseline")`, and dispatches it to `/v1/completions`. That -- not the
+    checkpoint's `apply_chat_template` -- is the render this predicate has to accept, and it is
+    what gets measured here. Getting it wrong fails **silently and closed**: `publish_decision`
+    drops every prefill, so the gate scores nothing, writes no record, dumps no row and logs
+    nothing, while the server answers normally. `check_model` cannot see it; the dimensions agree.
+
+    Returns a list of problems, empty when the predicate separates the two correctly. Warn-only by
+    design: it measures one single-turn render, so a mismatch is strong evidence rather than proof,
+    and refusing to serve on it would be worse than saying so loudly.
+
+    **Bound.** One conversation, one turn, no system message, and only the renders CyberGate itself
+    emits. It does not cover multi-turn, tool turns or prefix-cached prefills, each of which takes
+    a different branch of the predicate, and it cannot see whether the hook calls the predicate
+    with these arguments -- that needs a live request and a dump row count. It also says nothing
+    about the client's own chat render, which arrives as the answer-generation prefill;
+    `notebooks/render_preflight.ipynb` measures that too, against a real tokenizer.
+    """
+    encode = getattr(tok, "__call__", None)
+    if encode is None or not hasattr(family, "build_raw_prompt"):
+        return []
+
+    def shape(mode: str) -> tuple[int, int, str, bool] | None:
+        try:
+            text = family.build_raw_prompt(_RENDER_PROBE_MESSAGES, mode=mode)
+            ids = list(tok(text, add_special_tokens=False).input_ids)
+        except Exception:
+            return None
+        if not ids:
+            return None
+        spans, method = family.locate_all_user_spans(ids)
+        if not spans:
+            return None
+        u1_start, suffix_len = spans[0][0], len(ids) - spans[-1][1]
+        return (
+            u1_start,
+            suffix_len,
+            method,
+            bool(family.is_baseline_prefill(u1_start, suffix_len, method, _BASELINE_SUFFIX_MAX)),
+        )
+
+    problems: list[str] = []
+    observed = shape("baseline")
+    if observed is None:
+        return []
+    u1_start, suffix_len, method, publishes = observed
+    if not publishes:
+        problems.append(
+            f"{family.name}: the OBSERVATION render is REJECTED by is_baseline_prefill "
+            f"(u1_start={u1_start}, suffix_len={suffix_len}, span_method={method!r}); "
+            f"publish_decision will drop every prefill and this kit will gate nothing. "
+            f"baseline_suffix_lens={family.baseline_suffix_lens!r}"
+        )
+
+    for mode in _PASS2_MODES:
+        got = shape(mode)
+        if got is None or not got[3]:
+            continue
+        problems.append(
+            f"{family.name}: Pass-2 render {mode!r} is ACCEPTED as an observation "
+            f"(u1_start={got[0]}, suffix_len={got[1]}); it would overwrite the real decision with "
+            f"one scored on server-authored text"
+        )
+
+    declared = tuple(getattr(family, "baseline_suffix_lens", ()) or ())
+    if declared and suffix_len in declared:
+        dead = [n for n in declared if n != suffix_len]
+        if dead:
+            problems.append(
+                f"{family.name}: baseline_suffix_lens declares {dead} which this template's "
+                f"observation render does not produce (it renders at {suffix_len}). Dead or "
+                f"inherited values widen the predicate for nothing -- qwen38 carried Qwen3.6's 5 "
+                f"this way. Confirm each against notebooks/render_preflight.ipynb or drop it."
+            )
+    return problems
 
 #: Optional explicit `(start, length)` user span, set before prefill by single-process offline tests.
 #: Ignored unless the batch holds exactly one sequence.
@@ -143,6 +240,13 @@ def install_category_probe_hook(
     if model_problems:
         log_cybergate_event("CYBERGATE-KIT-MISMATCH", "; ".join(model_problems))
     enforce(model_problems, f"model {type(model).__name__}")
+
+    # Warn-only, and not covered by `enforce`: this reads one single-turn render, so a mismatch is
+    # strong evidence rather than proof. A kit whose observation render is rejected serves
+    # perfectly and gates nothing, which `check_model` above cannot see -- the dimensions agree.
+    render_problems = check_baseline_prefill_renders(family, worker_tok)
+    if render_problems:
+        log_cybergate_event("CYBERGATE-RENDER-MISMATCH", "; ".join(render_problems))
 
     target_layer = layers[min(op.gate_layer, len(layers) - 1)]
     default_pre = family.default_pre

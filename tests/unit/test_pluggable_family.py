@@ -42,6 +42,12 @@ class Mistral7BFamily(ModelFamily):
     span_label = "exact_token_markers(mistral)"
     default_pre = 9
     default_suf = 3
+    #: Empty: this family does not override `is_baseline_prefill`, so it uses the base
+    #: `suffix_len <= max_suffix` rule and no membership set applies. A family that DOES override
+    #: it must measure this from `build_raw_prompt(mode="baseline")` -- never from `default_suf`,
+    #: and never from the checkpoint's `apply_chat_template`, which renders the *generation*
+    #: prefill rather than the observation one.
+    baseline_suffix_lens = ()
     bos_token_id = 1
     #: It renders a BOS, so it needs no second fresh-prompt signal. Declared empty rather than
     #: inherited, which is what the SHARED_ATTRIBUTES checklist asks of every family.

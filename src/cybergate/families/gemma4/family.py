@@ -72,6 +72,12 @@ class Gemma4Family(ModelFamily):
     default_pre = 15
     default_suf = 9
 
+    # 2b. Empty on purpose: this family does NOT override `is_baseline_prefill`, so it uses the
+    # base `suffix_len <= max_suffix` rule and no membership set applies. Declared rather than
+    # inherited because `test_every_family_declares_every_serving_attribute_itself` requires it --
+    # an inherited default here is read, used and reported as success.
+    baseline_suffix_lens = ()
+
     # 3. packed-batch segmentation
     bos_token_id = 2  # <bos>
 

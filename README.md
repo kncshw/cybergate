@@ -9,7 +9,7 @@ steer the answer. The weights are never modified — `K = 0.0`, no ablation, no 
 nothing persists between requests.
 
 ```
-pytest          # 857 passed, 1 skipped, 6 xfailed, no GPU, no network, ~1.3 s
+pytest          # 874 passed, 1 skipped, 7 xfailed, no GPU, no network, ~1.3 s
 ```
 
 ## Why read activations instead of editing weights

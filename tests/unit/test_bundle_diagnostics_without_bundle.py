@@ -116,20 +116,36 @@ def test_malformed_dump_layers_falls_back_to_all(
     assert state["act_dump_layers"] is None
 
 
-#: `(u1_start, suffix_len, span_method)` -> is this the baseline (Pass-1) prefill?
+#: `(u1_start, suffix_len, span_method)` -> is this the observation prefill?
 #:
-#: Every request runs two prefills: the baseline observation of the user turn, and a Pass-2
-#: `<think>`-injected prefill that re-observes the same conversation with server-authored text
-#: appended. `_common.publish_decision` drops Pass-2, and the activation dump must drop it too --
-#: a dump that keeps it writes two rows per request where the second is pooled over text the user
-#: never sent. The file carries no labels, so a fit would consume them as data silently. The pair
-#: (14, 9) is from a decision record measured live on 2026-11-02.
+#: One request runs several prefills. `middleware._probe_observations` renders the observation
+#: itself -- `build_raw_prompt(mode="baseline")`, dispatched to `/v1/completions` -- and then the
+#: client's own chat request is prefilled separately for the answer, with a Pass-2 `<think>`
+#: injection in between when the gate fires. `_common.publish_decision` keeps only the first, and
+#: the activation dump must keep only the first too: the file carries no labels, so a second row
+#: per request is consumed by a later fit as data. `harvest_vllm_acts.py` asserts +1 row after
+#: every single request for exactly this reason.
+#:
+#: All values measured 2026-11-03 against `Qwen/Qwen3.8-27B`'s own tokenizer, except `(14, 9)`
+#: which is also a live decision record from 2026-11-02. See `tests/unit/
+#: test_baseline_prefill_renders.py` and `notebooks/render_preflight.ipynb`.
 BASELINE_PREFILL_CASES = (
+    # The observation. `u1_start=14` because `build_raw_prompt` prepends its own 6-token system
+    # prompt; `suffix_len=9` is `empty_thought_block`, which mode="baseline" always renders.
     (14, 9, "exact_token_markers(qwen38)", True),
-    (14, 5, "exact_token_markers(qwen38)", True),
+    # The client's own chat render: the ANSWER prefill, not an observation. `u1_start=45` because
+    # this checkpoint's template injects a 42-token reasoning-effort system prompt instead.
+    # Accepting this 7 was tried and reverted -- it double-publishes on every chat request.
+    (45, 7, "exact_token_markers(qwen38)", False),
+    # 5 was Qwen3.6's `default_suf`, inherited and read as an accepted length until the set was
+    # decoupled from it. It matches no render of this template.
+    (14, 5, "exact_token_markers(qwen38)", False),
     (14, 40, "exact_token_markers(qwen38)", False),
     (14, 10, "exact_token_markers(qwen38)", False),
     (0, 99, "full_sequence_fallback", True),
+    # Membership is not sufficiency: the Qwen arm also requires `u1_start > 3`, which a render
+    # with no system turn fails at the observation's own suffix length.
+    (3, 9, "exact_token_markers(qwen38)", False),
 )
 
 
