@@ -80,20 +80,33 @@ def check_baseline_prefill_renders(family: ModelFamily, tok: Any) -> list[str]:
     design: it measures one single-turn render, so a mismatch is strong evidence rather than proof,
     and refusing to serve on it would be worse than saying so loudly.
 
-    **Bound.** One conversation, one turn, no system message, and only the renders CyberGate itself
-    emits. It does not cover multi-turn, tool turns or prefix-cached prefills, each of which takes
-    a different branch of the predicate, and it cannot see whether the hook calls the predicate
-    with these arguments -- that needs a live request and a dump row count. It also says nothing
-    about the client's own chat render, which arrives as the answer-generation prefill;
-    `notebooks/render_preflight.ipynb` measures that too, against a real tokenizer.
+    Three things are checked: the observation render publishes, all eight Pass-2 modes are
+    rejected, and the checkpoint's own chat renders -- the answer-generation prefills that
+    `middleware.__call__` forwards to `/v1/chat/completions` after the probe has published -- are
+    rejected too. The last of those is not optional: gemma4 uses the base `suffix_len <=
+    max_suffix` rule, whose first statement is `del u1_start`, and its chat render's suffix is the
+    same length as its observation's, so nothing in the predicate separates them.
+
+    **Bound.** One conversation, one turn, no system message. It does not cover multi-turn, tool
+    turns or prefix-cached prefills, each of which takes a different branch of the predicate, and
+    it cannot see whether the hook calls the predicate with these arguments -- that needs a live
+    request and a dump row count. `notebooks/render_preflight.ipynb` is the same measurement with
+    a table, runnable without a GPU before a serve.
     """
     encode = getattr(tok, "__call__", None)
     if encode is None or not hasattr(family, "build_raw_prompt"):
         return []
 
-    def shape(mode: str) -> tuple[int, int, str, bool] | None:
+    def measure(text: str) -> tuple[int, int, str, bool] | None:
+        """Locate and judge one rendered prompt. One encoder for every render, deliberately.
+
+        Taking ids from `apply_chat_template(tokenize=True)` is not comparable: in current
+        transformers it returns a `BatchEncoding`, and `list()` of that yields
+        `['input_ids', 'attention_mask']`, which matches no markers and degrades to
+        `full_sequence_fallback` -- a branch the predicate publishes unconditionally, so the shape
+        bug reads as a real finding.
+        """
         try:
-            text = family.build_raw_prompt(_RENDER_PROBE_MESSAGES, mode=mode)
             ids = list(tok(text, add_special_tokens=False).input_ids)
         except Exception:
             return None
@@ -109,6 +122,53 @@ def check_baseline_prefill_renders(family: ModelFamily, tok: Any) -> list[str]:
             method,
             bool(family.is_baseline_prefill(u1_start, suffix_len, method, _BASELINE_SUFFIX_MAX)),
         )
+
+    def shape(mode: str) -> tuple[int, int, str, bool] | None:
+        """One `build_raw_prompt` mode, rendered the way the probe renders it.
+
+        `include_bos` must match `middleware._probe_observations`, which passes
+        `family.supports_bos`. Rendering without it shifts `u1_start` by one for a BOS family --
+        harmless while the predicate ignores `u1_start`, and wrong the moment one guards on it.
+        """
+        try:
+            text = family.build_raw_prompt(
+                _RENDER_PROBE_MESSAGES, mode=mode, include_bos=family.supports_bos
+            )
+        except Exception:
+            return None
+        return measure(text)
+
+    def client_renders() -> list[tuple[str, tuple[int, int, str, bool]]]:
+        """The checkpoint's own chat renders: the ANSWER prefills, which must all be dropped.
+
+        `middleware.__call__` forwards the caller's untouched payload to `/v1/chat/completions`
+        after the probe has already published, and vLLM renders that with the checkpoint's
+        template. If one of those renders publishes, it overwrites the decision the gate just made
+        with a score pooled under a different prefix, and appends a second unlabelled row to any
+        running dump. This is the half a `build_raw_prompt`-only check cannot see.
+        """
+        render = getattr(tok, "apply_chat_template", None)
+        if render is None:
+            return []
+        out: list[tuple[str, tuple[int, int, str, bool]]] = []
+        for label, kwargs in (
+            ("default", {}),
+            ("enable_thinking=True", {"enable_thinking": True}),
+            ("enable_thinking=False", {"enable_thinking": False}),
+        ):
+            try:
+                text = render(
+                    _RENDER_PROBE_MESSAGES,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    **kwargs,
+                )
+            except Exception:
+                continue
+            got = measure(text) if isinstance(text, str) else None
+            if got is not None:
+                out.append((label, got))
+        return out
 
     problems: list[str] = []
     observed = shape("baseline")
@@ -131,6 +191,18 @@ def check_baseline_prefill_renders(family: ModelFamily, tok: Any) -> list[str]:
             f"{family.name}: Pass-2 render {mode!r} is ACCEPTED as an observation "
             f"(u1_start={got[0]}, suffix_len={got[1]}); it would overwrite the real decision with "
             f"one scored on server-authored text"
+        )
+
+    for label, (c_u1, c_suffix, c_method, c_publishes) in client_renders():
+        if not c_publishes:
+            continue
+        same = " -- byte-identical in length to the observation's" if c_suffix == suffix_len else ""
+        problems.append(
+            f"{family.name}: the CLIENT chat render {label!r} is ACCEPTED as an observation "
+            f"(u1_start={c_u1}, suffix_len={c_suffix}{same}, span_method={c_method!r}, against the "
+            f"observation's u1_start={u1_start}, suffix_len={suffix_len}). It is the "
+            f"answer-generation prefill: it will overwrite the decision the gate just published "
+            f"and append a second unlabelled row to any running activation dump"
         )
 
     declared = tuple(getattr(family, "baseline_suffix_lens", ()) or ())

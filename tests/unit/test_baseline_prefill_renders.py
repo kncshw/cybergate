@@ -228,3 +228,89 @@ def test_an_empty_or_unparseable_render_is_silent() -> None:
     family = _ModeTaggingFamily(family_by_name("qwen38"))
 
     assert check_baseline_prefill_renders(family, _FakeTokenizer({}, default=[])) == []
+
+
+class _ChatTokenizer(_FakeTokenizer):
+    """Adds `apply_chat_template`, so the client-render arm of the check is exercised."""
+
+    def __init__(self, by_mode: dict[str, list[int]], default: list[int] | None = None,
+                 client: list[int] | None = None, accepts_thinking: bool = True) -> None:
+        super().__init__(by_mode, default)
+        self._client = client
+        self._accepts_thinking = accepts_thinking
+
+    def apply_chat_template(self, messages: Any, tokenize: bool = True,
+                            add_generation_prompt: bool = False, **kwargs: Any) -> str:
+        del messages, tokenize, add_generation_prompt
+        if "enable_thinking" in kwargs and not self._accepts_thinking:
+            raise TypeError("unexpected keyword argument 'enable_thinking'")
+        return "CLIENT"
+
+    def __call__(self, text: str, add_special_tokens: bool = True) -> Any:
+        if text == "CLIENT" and self._client is not None:
+            return type("Enc", (), {"input_ids": list(self._client)})()
+        return super().__call__(text, add_special_tokens)
+
+
+def test_a_client_render_accepted_as_an_observation_is_reported() -> None:
+    """gemma4's live failure mode, reproduced on the predicate rather than asserted.
+
+    The agent measurement of 2026-11-03 found gemma4's chat render at `(u1_start=4, suffix_len=9)`
+    against an observation at `(15, 9)` -- the same suffix length. The base rule does `del
+    u1_start`, so nothing separates them and the answer prefill overwrites the decision.
+    """
+    family = _ModeTaggingFamily(family_by_name("qwen38"))
+    # A client render at the observation's own suffix length, with a shorter system prompt.
+    tok = _ChatTokenizer({"baseline": _render(9)}, _render(60), client=_render(9, system_tokens=1))
+
+    problems = check_baseline_prefill_renders(family, tok)
+
+    accepted = [p for p in problems if "CLIENT chat render" in p]
+    assert len(accepted) == 3, f"all three client variants must be named: {problems}"
+    assert all("byte-identical in length" in p for p in accepted)
+    assert all("overwrite the decision" in p for p in accepted)
+
+
+def test_a_client_render_the_predicate_rejects_is_not_reported() -> None:
+    """qwen38's actual state: the client renders at suffix 7, which `(9,)` drops. No complaint."""
+    family = _ModeTaggingFamily(family_by_name("qwen38"))
+    tok = _ChatTokenizer({"baseline": _render(9)}, _render(60), client=_render(7, system_tokens=37))
+
+    assert check_baseline_prefill_renders(family, tok) == []
+
+
+def test_a_tokenizer_without_a_chat_template_still_checks_the_observation() -> None:
+    """The client arm is additive: a tokenizer that cannot render one must not silence the rest."""
+    family = _ModeTaggingFamily(family_by_name("qwen38"))
+
+    problems = check_baseline_prefill_renders(family, _tok_for(7))
+
+    assert len(problems) == 1 and "OBSERVATION render is REJECTED" in problems[0]
+
+
+def test_the_observation_is_rendered_with_the_bos_the_probe_passes() -> None:
+    """`_probe_observations` passes `include_bos=family.supports_bos`; the check must match it.
+
+    For a BOS family that is a one-token `u1_start` shift. Harmless while the base rule does
+    `del u1_start`, and wrong the moment a guard on it is added -- which is the fix gemma4 needs.
+    """
+    seen: list[bool] = []
+
+    class _Recording:
+        def __init__(self, family: Any) -> None:
+            self._family = family
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._family, name)
+
+        def build_raw_prompt(self, messages: Any, mode: str = "baseline",
+                             include_bos: bool = False, **kw: Any) -> str:
+            seen.append(include_bos)
+            return self._family.build_raw_prompt(
+                messages, mode=mode, include_bos=include_bos, **kw) + mode
+
+    gemma = family_by_name("gemma4")
+    check_baseline_prefill_renders(_Recording(gemma), _tok_for(9))
+
+    assert gemma.supports_bos is True
+    assert seen and all(seen), "every render must use the probe's include_bos"
