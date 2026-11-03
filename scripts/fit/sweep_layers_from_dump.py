@@ -146,8 +146,16 @@ def main() -> int:
         raise SystemExit(f"--holdout {args.holdout!r} is also being fitted on; it would not "
                          f"be held out.")
 
+    # One eigendecomposition of a hidden x hidden matrix per layer, which is minutes of silence
+    # over a full stack. Printing per layer costs nothing and distinguishes "still working" from
+    # "wedged" without the caller having to go and read `pcpu`.
+    import time as _time
+    t_sweep = _time.time()
+    print(f"fitting {len(layers)} layer(s); each is an eigendecomposition of "
+          f"{hidden}x{hidden}\n", flush=True)
     table = []
-    for L in layers:
+    for n_done, L in enumerate(layers, 1):
+        t_layer = _time.time()
         X = rows_for(dump, L, args.pool, hidden, len(order))
         c_unit, _ = fit_m1_subcat_tridge(X[pa:pb], X[na:nb], subcat, k=args.k)
         s_pos, s_neg = cosines(X[pa:pb], c_unit), cosines(X[na:nb], c_unit)
@@ -164,6 +172,11 @@ def main() -> int:
             leaks[name] = float(np.mean(cosines(X[a:b], c_unit) >= tau))
         rank = recall_out - (max(leaks.values()) if leaks else 0.0)
         table.append((rank, recall_out, auc_in, recall_in, tau, L, margin, leaks, c_unit))
+        el = _time.time() - t_sweep
+        print(f"  L{L:<3} {_time.time() - t_layer:5.1f}s   held-out {recall_out:.4f}"
+              + ("".join(f"  {n}={leaks[n]:.4f}" for n in args.leak) if args.leak else "")
+              + f"   [{n_done}/{len(layers)}, eta "
+              f"{el / n_done * (len(layers) - n_done):4.0f}s]", flush=True)
 
     table.sort(reverse=True)
     head = (f"{'layer':>5} {'HELD-OUT recall':>16}"
