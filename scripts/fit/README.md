@@ -253,3 +253,31 @@ Exit `0` the question is answered (either an index to re-point, or the direction
 `1` no layer matches so the activations differ and a re-fit from the dump is the fix, `2` the
 diagnostic was not armed. `kits/<kit>/diagnostic_reference.json` holds the capture-time scores it
 compares against; those are a reference, not canaries -- they assert a score, not a verdict.
+
+## `harvest_vllm_acts.py` — capture activations from the serving engine itself
+
+Replays corpora at a live vLLM server with `CYBERGATE_DUMP_ACTS_DIR` armed, so the fit uses the
+vectors the gate actually scores rather than `transformers`' version of them. Needed when a
+direction fitted offline does not transfer: on qwen38 the shipped direction scored AUC **0.5893**
+live at its own gate layer against **0.9974** claimed in-sample, measured on 12 of its own fit
+positives against 14 of its own fit references.
+
+Row `i` must be request `i`, so it sends one request at a time and verifies the dump grew by
+exactly one row after each. On any anomaly it aborts instead of continuing — a gap mislabels every
+row after it and nothing downstream can detect that. `--out` records the replay order, which is
+what makes the dump interpretable.
+
+## `sweep_layers_from_dump.py` — fit at every layer, rank OUT OF SAMPLE
+
+Fits the category direction at each layer of a dump and ranks layers by **held-out recall** on a
+split the fit never sees, with `tau` from R3 on the fit references — the same protocol that
+produces the gemma4 kit's headline number. `--holdout` is required: ranking on an in-sample number
+is the mistake this script exists to prevent.
+
+It runs a positive control first. The dumped row for a prompt must reproduce the
+`X<layer>_mean_user` the serving hook recorded for that same prompt, or the dump is not the
+vectors the gate scores and the sweep means nothing. The in-sample AUC is still printed, beside
+the held-out number, so the gap between them is visible.
+
+`acts_from_serving.py` remains the route for feeding a dump to `fit_refusal.py`, which this does
+not cover.
