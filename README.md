@@ -127,9 +127,11 @@ tail -f logs/cybergate_eval_serve.log        # wait for "Application startup com
 `docs/EVALUATOR_QUICKSTART.md` has the full version, including what this repository cannot
 reproduce: the evaluation corpora and harvest scripts are not in it.
 
-**On Colab**, if you have no local GPU: `notebooks/serve_kit_colab.ipynb` clones this repo,
-downloads the weights and serves any kit with the canary check at the end. One 26B-class
-model needs an 80 GB card in bf16.
+**On Colab**, if you have no local GPU: `notebooks/qwen38_live_chat.ipynb` serves a kit and
+lets you talk to it, showing the gate's decision on every turn and checking that a request
+the gate *holds* comes back byte-identical to the pristine model.
+`notebooks/serve_kit_colab.ipynb` is the same serve without the conversation, for verifying
+a kit. One 26B-class model needs an 80 GB card in bf16.
 
 ## Kits, and why canaries exist
 
@@ -259,7 +261,8 @@ src/cybergate_plugin/     drop-in facade: the --middleware path and entry point
 kits/                     one self-contained deployment kit per served model
 scripts/fit/              fit a new model's two directions
 scripts/serving/          serve and verify
-notebooks/                Colab: serve_kit_colab (any kit), qwen38_colab (fit one)
+notebooks/                Colab: qwen38_live_chat (talk to it), serve_kit_colab (verify
+                          a kit), qwen38_colab (fit one)
 tests/unit/               policy regressions R1-R14, keys, families, kit binding, purity
 tests/equivalence/        differential suites against the vendored reference implementation
 docs/                     ARCHITECTURE, PROCESS_TOPOLOGY, EVALUATOR_QUICKSTART, DECODE_CALIBRATION
