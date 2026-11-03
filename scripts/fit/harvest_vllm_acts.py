@@ -145,6 +145,13 @@ def main() -> int:
             raise SystemExit(f"ABORT at request {i} ({r['key']}): {exc!r}\nRow alignment is "
                              f"unknown from here. Empty {dump} and start over; do not resume.")
         after = wait(before + 1)
+        if after == before == 0:
+            raise SystemExit(
+                f"ABORT at request {i} ({r['key']}): the request succeeded but {probe} was never "
+                f"written.\n--dump-dir says where to WATCH; the server writes to whatever "
+                f"CYBERGATE_DUMP_ACTS_DIR was set to when it STARTED, and changing --dump-dir does "
+                f"not move it. Check the serve log:\n    grep ACTDUMP <serve log>\nand pass that "
+                f"path, or restart the server with the path you want.")
         if after != before + 1:
             raise SystemExit(f"ABORT at request {i} ({r['key']}): {probe.name} went {before} -> "
                              f"{after}, expected +1. Row i is no longer request i.")
