@@ -114,3 +114,36 @@ def test_malformed_dump_layers_falls_back_to_all(
     state = _attach(qwen38_layers)
 
     assert state["act_dump_layers"] is None
+
+
+#: `(u1_start, suffix_len, span_method)` -> is this the baseline (Pass-1) prefill?
+#:
+#: Every request runs two prefills: the baseline observation of the user turn, and a Pass-2
+#: `<think>`-injected prefill that re-observes the same conversation with server-authored text
+#: appended. `_common.publish_decision` drops Pass-2, and the activation dump must drop it too --
+#: a dump that keeps it writes two rows per request where the second is pooled over text the user
+#: never sent. The file carries no labels, so a fit would consume them as data silently. The pair
+#: (14, 9) is from a decision record measured live on 2026-11-02.
+BASELINE_PREFILL_CASES = (
+    (14, 9, "exact_token_markers(qwen38)", True),
+    (14, 5, "exact_token_markers(qwen38)", True),
+    (14, 40, "exact_token_markers(qwen38)", False),
+    (14, 10, "exact_token_markers(qwen38)", False),
+    (0, 99, "full_sequence_fallback", True),
+)
+
+
+@pytest.mark.parametrize(("u1_start", "suffix_len", "span_method", "expected"),
+                         BASELINE_PREFILL_CASES)
+def test_the_dump_filter_predicate_separates_the_two_prefills(
+    u1_start: int, suffix_len: int, span_method: str, expected: bool
+) -> None:
+    """The predicate the dump filters on, pinned on qwen38.
+
+    **Bound.** This covers the predicate, not the hook. Whether `attach_bundle_telemetry_hooks`
+    calls it with the right arguments cannot be checked here -- the hook body needs real tensors.
+    The harvest's own per-request row check is what verifies that end to end: with the filter
+    working, one request appends exactly one row.
+    """
+    family = family_by_name("qwen38")
+    assert family.is_baseline_prefill(u1_start, suffix_len, span_method, 12) is expected

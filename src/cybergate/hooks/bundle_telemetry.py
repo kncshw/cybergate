@@ -33,6 +33,10 @@ __all__ = ["attach_bundle_telemetry_hooks"]
 BUNDLE_PROBE_LAYERS = (15, 16, 18, 19, 20, 21, 22, 24, 26, 28)
 
 
+#: Mirrors `category_probe._BASELINE_SUFFIX_MAX`. A Pass-2 route prefill appends an
+#: injected thought block, so its suffix is long; Pass-1's is short.
+_BASELINE_SUFFIX_MAX = 12
+
 def _resolve_bundle_path(family: ModelFamily) -> Path | None:
     """Resolve the candidate operator bundle path across OPS_DIR and CYBERGATE_OP_PATH's directory."""
     if not family.default_bundle_name:
@@ -248,7 +252,7 @@ def _make_hook(
                 continue
             seq_ids = ids_1d[q_start:q_end] if ids_1d is not None else None
             if seq_ids is not None:
-                user_spans, _ = family.locate_all_user_spans(seq_ids)
+                user_spans, span_method = family.locate_all_user_spans(seq_ids)
             else:
                 user_spans = [
                     (
@@ -256,6 +260,7 @@ def _make_hook(
                         max(family.default_pre + 1, (q_end - q_start) - family.default_suf),
                     )
                 ]
+                span_method = f"default_offsets({family.default_pre}:-{family.default_suf})"
             u_start, u_end = user_spans[-1]
             h_seq = h_2d[q_start:q_end]
             slot = state["multi_layer_slice_scores"].setdefault((q_start, q_end), {})
@@ -272,7 +277,20 @@ def _make_hook(
                 )
             dump_dir = state.get("act_dump_dir")
             want = state.get("act_dump_layers")
-            if dump_dir and (want is None or layer_idx in want):
+            # Pass-1 ONLY. Every request runs two prefills: the baseline observation of the user
+            # turn, and a Pass-2 `<think>`-injected prefill that re-observes the same conversation
+            # with server-authored text appended. `_common.publish_decision` drops Pass-2 for
+            # exactly that reason, and a dump that keeps it writes two rows per request where the
+            # second is scored over text the user never sent -- half a fit corpus of it, silently,
+            # since the file carries no labels. Same predicate the probe records as
+            # `is_baseline_prefill`; see hooks/category_probe.py.
+            is_pass1 = family.is_baseline_prefill(
+                user_spans[0][0] if user_spans else u_start,
+                (q_end - q_start) - u_end,
+                span_method,
+                _BASELINE_SUFFIX_MAX,
+            )
+            if dump_dir and is_pass1 and (want is None or layer_idx in want):
                 # BOTH pools. The category factor is fitted on `mean_user` and the refusal factor
                 # on `last`, so dumping only the first makes half the kit unfittable from vLLM's
                 # own activations -- which is the only way to fit a model whose kernels disagree
