@@ -49,7 +49,8 @@
         "fired": "0 of 5",
         "note": "These five are genuine pool-cyber_offense fit positives, keyed by prompt sha, and the live scores and tau are both real, so none of the kit's own highest-scoring fit positives clears its own threshold at serve time. The capture-time scores they were compared against (+0.218 to +0.238) were measured in the FIT render while these are the serving render, so the two columns are not comparable in magnitude -- but the 0-of-5 against tau does not depend on that comparison."
       },
-      "the_discriminating_evidence": "Refitting at the SAME L39 on vLLM's own pooled activations gives 0.9526 held-out recall where the shipped L39 operator fires on none of its own top fit positives. That pair is what establishes the capture geometry as the cause, and neither half of it depends on the retracted AUCs."
+      "the_discriminating_evidence": "Refitting at the SAME L39 on vLLM's own pooled activations gives 0.9526 held-out recall where the shipped L39 operator fires on none of its own top fit positives. That pair is what establishes the capture geometry as the cause, and neither half of it depends on the retracted AUCs.",
+      "SUPERSEDED_BY": "shipped_category_direction_PARTIALLY_transfers, measured on the full corpora. The five-prompt 0-of-5 below is still true but it is five prompts; the full measurement puts the shipped direction at 18% recall on its own 100 positives, so 'fires on none of its top fit positives' was a small-sample artifact of which five were picked."
     },
     "shipped_refusal_direction_DOES_transfer": {
       "harmful_over_floor": "31/31",
@@ -107,6 +108,26 @@
       "why_not_L51": "The sweep ranks by recall minus the worst leak and the two tie exactly at 0.8461, so the ordering between them came from the tie-break on recall. On the three leak sets that metric ignores, L51 is 12x worse into WMDP-bio and 3.5x worse on benign prompts for 3.9 points of recall.",
       "high_recall_layers_are_the_leaky_ones": "L39 leaks 0.2104 into WMDP-bio and L25 leaks 0.2402, at recall 0.9526 and 0.9422. Those directions are substantially generic-harm rather than cyber-specific. The shipped kit chose L39 on in-sample AUC, and L39 is among the least selective layers in the stack -- which an in-sample AUC of 0.9985 could not have revealed.",
       "NOT_CLEAN_YET": "The layer was chosen by looking at recall AND all four leak sets, so every number in this block is optimistically biased by selection over 64 layers. cysecbench_test_675 is still untouched and gives a clean recall. For a clean leak, incorpus_nontarget_leak_378 and pku_cybercrime_612 have not been used for anything. And all of this is offline scoring over harvested activations; gemma4's numbers come from a deployed gate, so the comparison is not yet like for like."
+    },
+    "shipped_category_direction_PARTIALLY_transfers": {
+      "basis": "The shipped L39 direction scored over the 3284-row vLLM dump with the splits read from the replay order file, at its own tau of +0.06295487. scripts/fit/score_op_from_dump.py, on the full corpora -- not a sampled handful.",
+      "fire_rate_at_shipped_tau": {
+        "pos_100": 0.18,
+        "cysec_val_675": 0.1911,
+        "neg_140": 0.0,
+        "catqa_234": 0.0085,
+        "harmless_1000": 0.0
+      },
+      "mean_cosine": {
+        "pos_100": 0.023789,
+        "cysec_val_675": 0.029806,
+        "neg_140": 0.004286,
+        "catqa_234": 0.006958,
+        "harmless_1000": -0.000228
+      },
+      "auc_pos_vs_neg": 0.65,
+      "note": "This supersedes two earlier accounts in this file, both of which were too strong. The direction is NOT dead: AUC 0.65 against its own fit references, and the leak at its own threshold is essentially zero -- 0/140 references, 0/1000 harmless, 2/234 CatQA. What failed is the pairing of direction and threshold. The score distribution shrank by about 9x between the two engines (positives at +0.024 against the +0.22 of the capture) while tau stayed where R3 put it on transformers activations, so the threshold now sits above roughly four fifths of the positives. 18% recall at ~0% leak is a working-but-blind gate, not a broken direction.",
+      "what_this_does_not_settle": "How much of the gap a threshold re-derivation alone would close. R3 applied to the SAME 140 references in the vLLM geometry is the same rule in the right space, not a tuned parameter, and scripts/fit/score_op_from_dump.py --retune-tau reports it. At AUC 0.65 the shipped direction cannot reach the re-fit's 0.92 recall at low leak whatever the threshold, so a re-fit is still expected to be needed -- but the decomposition between 'wrong threshold' and 'weaker direction' has not been measured."
     }
   },
   "known_gaps": [

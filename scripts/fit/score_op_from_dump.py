@@ -26,7 +26,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from fit_category import cosines   # noqa: E402
+from fit_category import cosines, threshold_r3   # noqa: E402
 
 
 def auc(a: np.ndarray, b: np.ndarray) -> float:
@@ -45,6 +45,11 @@ def main() -> int:
     ap.add_argument("--layers", default=None, help="default: the operator's own layer only")
     ap.add_argument("--auc-pair", default=None, metavar="TARGET:LEAK",
                     help="also report AUC between these two splits, e.g. pos:neg")
+    ap.add_argument("--retune-tau", default=None, metavar="SPLIT",
+                    help="also report everything at a threshold re-derived by R3 on THIS split, "
+                         "which separates 'the direction does not transfer' from 'the threshold "
+                         "was calibrated on another engine\'s activations'. The operator\'s own "
+                         "tau is kept for the first table.")
     args = ap.parse_args()
 
     meta = json.loads(pathlib.Path(args.order).read_text())
@@ -90,6 +95,24 @@ def main() -> int:
             t, _, k = args.auc_pair.partition(":")
             if t in scores and k in scores:
                 print(f"   AUC({t} vs {k}) = {auc(scores[t], scores[k]):.4f}")
+
+        if args.retune_tau:
+            if args.retune_tau not in idx:
+                raise SystemExit(f"--retune-tau {args.retune_tau!r} is not a split")
+            a, b = idx[args.retune_tau]
+            tau2, _ = threshold_r3(c, X[a:b])
+            ratio = f"{tau2 / tau:.3f}" if tau else "n/a"
+            print(f"\n   R3 re-derived on {args.retune_tau} in THIS geometry: tau "
+                  f"{tau2:+.8f}  (shipped {tau:+.8f}, ratio {ratio})")
+            for name in want:
+                s = scores[name]
+                role = "TARGET" if name in args.target else "leak  "
+                print(f"   {role} {name:<12} n={len(s):>5}  >= new tau "
+                      f"{float(np.mean(s >= tau2)):.4f}   was {float(np.mean(s >= tau)):.4f}")
+            print("   A threshold is not a free parameter: R3 is the 12th-largest score on the "
+                  "fit\n   references, so re-deriving it here is the same RULE applied in the "
+                  "geometry the\n   gate scores in -- not a threshold tuned to make the numbers "
+                  "better.")
         print()
     return 0
 
