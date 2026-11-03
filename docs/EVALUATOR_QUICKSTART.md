@@ -18,7 +18,7 @@ this repository: the evaluation corpora and the harvest scripts are not in it. S
 git clone <repo> && cd cybergate
 python3 -m venv .venv
 .venv/bin/pip install -e '.[test]'
-.venv/bin/python -m pytest                              # 850 passed, 1 skipped, 6 xfailed
+.venv/bin/python -m pytest                              # 857 passed, 1 skipped, 6 xfailed
 .venv/bin/python -m cybergate_plugin.cli --self-check
 ```
 

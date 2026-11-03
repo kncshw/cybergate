@@ -36,6 +36,19 @@ L55 reaches 0.9230 at 0.0047. The original fit chose L39 on an in-sample AUC of 
 in-sample AUC column in this table is 0.99+ at all 64 layers -- including layers whose held-out
 recall is 0.21. It could not have distinguished any of them.
 
+## `live_validation_2026-11-02.txt` / `.json`
+
+The deployed gate's own output: 4,134 prompts replayed at the served kit, per-corpus fire counts on
+both the as-recorded and veto-adjusted bases, with `missing` at 0 on all eight splits and
+`span_method` reading `exact_token_markers(qwen38)` on every request. This is the measurement that
+is comparable to gemma4's headline numbers -- a layer sweep is not, because the deployed path adds
+the refusal veto and (on families that have one) the mid/late rescue.
+
+`tests/unit/test_qwen38_live_validation.py` asserts the kit still describes this run, so
+re-pointing the gate, retuning tau or rewriting the canaries fails the suite until the record is
+updated with it. One of those tests pins the constraint that cost us L55: the gate layer must sit
+below `ref_layer`, checked for all three families.
+
 ## What is still not retained
 
 The 4.1 GB activation dump and the decision records. Both are reproducible from

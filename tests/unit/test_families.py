@@ -153,22 +153,13 @@ def test_family_by_name_raises_rather_than_falling_back() -> None:
 #: Families that ship without `verified_live`, each with the reason it is carried anyway. A new
 #: family added with `verified_live = False` must be listed HERE, with a justification, rather than
 #: slipping in silently -- that is what `test_every_remaining_family_is_live_verified` enforces.
-UNVERIFIED_WITH_CAUSE = {
-    "qwen38": (
-        "Measured live 2026-11-02/03 on vLLM 0.32: the shipped category direction fires on NONE "
-        "of its own top five fit positives -- live L39 scores +0.036978, +0.054872, +0.022492, "
-        "-0.001360, +0.002108 against its own tau of +0.06295487 -- while the refusal direction "
-        "at L43 transfers cleanly (31/31 harmful above the 1.50 floor, 0/15 harmless). The cause "
-        "is the capture geometry: refitting at the SAME L39 on vLLM's own activations, same 240 "
-        "rows and same ridge, gives 0.9526 held-out recall on 675 CySecBench prompts the fit "
-        "never saw, and L55 gives 0.9230 at 0.0769 CatQA leak against gemma4's 0.827 and 0.098. "
-        "In-sample AUC is 0.99+ at all 64 layers including those at 0.21 held-out, so it ranks "
-        "nothing. NOT finished: the re-fit layer was chosen by looking at the leak corpora, so "
-        "those figures are selection-biased, and nothing has been measured through a deployed "
-        "gate. An AUC pair reported here earlier was withdrawn -- the prompt lists behind it "
-        "were typed rather than read from the corpora. See kits/qwen38/MANIFEST.json."
-    ),
-}
+UNVERIFIED_WITH_CAUSE: dict[str, str] = {}
+#: Empty, and that is the point: every registered family has been served and measured. qwen38 was
+#: the last entry and earned `verified_live` on 2026-11-02 -- 4,134 prompts at the deployed gate,
+#: 587/675 CySecBench on a split that chose nothing, canaries pinned from the live scores, kit
+#: check clean without CYBERGATE_SKIP_KIT_CHECK. Its justification lived here while it did not
+#: gate; see kits/qwen38/MANIFEST.json measured_live for what replaced it, and known_gaps for what
+#: is still missing -- `verified_live` means served and calibrated, not finished.
 
 
 def test_every_remaining_family_is_live_verified() -> None:
@@ -181,7 +172,7 @@ def test_every_remaining_family_is_live_verified() -> None:
     """
     names = {f.name for f in ALL_FAMILIES}
     verified = {f.name for f in ALL_FAMILIES if f.verified_live}
-    assert verified == {"gemma4", "qwen36"}
+    assert verified == {"gemma4", "qwen36", "qwen38"}
     assert names - verified == set(UNVERIFIED_WITH_CAUSE), (
         "a family is unverified and unexplained; add it to UNVERIFIED_WITH_CAUSE with the reason"
     )

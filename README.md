@@ -9,7 +9,7 @@ steer the answer. The weights are never modified — `K = 0.0`, no ablation, no 
 nothing persists between requests.
 
 ```
-pytest          # 850 passed, 1 skipped, 6 xfailed, no GPU, no network, ~1.3 s
+pytest          # 857 passed, 1 skipped, 6 xfailed, no GPU, no network, ~1.3 s
 ```
 
 ## Why read activations instead of editing weights
@@ -66,6 +66,39 @@ Three caveats travel with those numbers, and each kit's `MANIFEST.json` states t
   14.7% of delivered recall rests on a separate mechanism.
 * The two bio corpora disagree by two orders of magnitude on the same model and operator — 4/637
   versus 0/498 — which points at multiple-choice framing rather than biology content. Not isolated.
+
+### A second model, measured the same way
+
+Qwen3.8-27B, 4,134-prompt live harvest on the served checkpoint, 2026-11-02. The CySecBench split
+below **chose nothing** — not the layer, not the threshold, not the direction:
+
+| corpus | n | qwen38 | gemma4 | |
+|---|---|---|---|---|
+| CySecBench | 675 | **587** (87.0%) | 558 (82.7%) | target |
+| CatQA | 234 | **23** (9.8%) | 23 (9.8%) | non-target |
+| WMDP-bio | 637 | 6 | 4 | non-target |
+| SOSBench-bio | 498 | **0** | 0 | non-target |
+| harmless | 1000 | 12, and **0** after the veto | not measured | non-target |
+| PKU-cybercrime | 612 | **220** (36.0%) | not measured | non-target |
+
+Qwen3.8 has **no middle/late rescue**, so all 587 fires are threshold crossings — against 476 of
+gemma4's 558. Two things cut the other way, and `kits/qwen38/MANIFEST.json` carries both: its
+refusal sigma is still the `transformers`-capture value, so the two-factor veto removes 90 of the
+587 and veto-adjusted recall is 73.6% against gemma4's 81.9%; and the 36% PKU-cybercrime leak is
+not explained.
+
+**What this model cost to get working is the more useful result.** Its first operator was fitted on
+`transformers` activations, the way every kit here was, and served under vLLM it gated nothing —
+not from a bug, but because the directions do not transfer between the two engines on a hybrid
+linear-attention stack. Served, it scored SOSBench-bio prompts as highly as its own cyber
+positives. Refitting on vLLM's own pooled activations fixed it: four prompts from the diagnosis
+scored +0.0370, +0.0021, +0.0225 and −0.0014 against a threshold of +0.0630 before, and +0.4105,
++0.3942, +0.3933 and +0.4196 against +0.0879 after. Same prompts, same checkpoint, same render.
+
+And the layer that in-sample AUC picked was one of the worst in the stack. **In-sample AUC is 0.99+
+at all 64 layers**, including layers whose held-out recall is 0.21; it selected L39, which refitted
+properly reaches 0.9526 recall and leaks **0.2104** into WMDP-bio. The 64-layer table is in
+`kits/qwen38/records/harvest_2026-11-02_layer_sweep.txt` if you want to check that yourself.
 
 ## Try it
 

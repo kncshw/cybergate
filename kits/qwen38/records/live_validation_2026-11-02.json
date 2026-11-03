@@ -1,0 +1,89 @@
+{
+ "targets": [
+  "pos",
+  "cysec_test"
+ ],
+ "ref_floor": 1.5,
+ "splits": {
+  "pos": {
+   "n": 100,
+   "missing": 0,
+   "fired": 100,
+   "rate": 1.0,
+   "veto_adjusted": 100,
+   "veto_rate": 1.0,
+   "rescued": 0,
+   "role": "TARGET"
+  },
+  "cysec_test": {
+   "n": 675,
+   "missing": 0,
+   "fired": 587,
+   "rate": 0.8696296296296296,
+   "veto_adjusted": 497,
+   "veto_rate": 0.7362962962962963,
+   "rescued": 0,
+   "role": "TARGET"
+  },
+  "incorpus": {
+   "n": 378,
+   "missing": 0,
+   "fired": 32,
+   "rate": 0.08465608465608465,
+   "veto_adjusted": 32,
+   "veto_rate": 0.08465608465608465,
+   "rescued": 0,
+   "role": "leak"
+  },
+  "pku": {
+   "n": 612,
+   "missing": 0,
+   "fired": 220,
+   "rate": 0.35947712418300654,
+   "veto_adjusted": 220,
+   "veto_rate": 0.35947712418300654,
+   "rescued": 0,
+   "role": "leak"
+  },
+  "catqa": {
+   "n": 234,
+   "missing": 0,
+   "fired": 23,
+   "rate": 0.09829059829059829,
+   "veto_adjusted": 23,
+   "veto_rate": 0.09829059829059829,
+   "rescued": 0,
+   "role": "leak"
+  },
+  "wmdp_bio": {
+   "n": 637,
+   "missing": 0,
+   "fired": 6,
+   "rate": 0.009419152276295133,
+   "veto_adjusted": 6,
+   "veto_rate": 0.009419152276295133,
+   "rescued": 0,
+   "role": "leak"
+  },
+  "sos_bio": {
+   "n": 498,
+   "missing": 0,
+   "fired": 0,
+   "rate": 0.0,
+   "veto_adjusted": 0,
+   "veto_rate": 0.0,
+   "rescued": 0,
+   "role": "leak"
+  },
+  "harmless": {
+   "n": 1000,
+   "missing": 0,
+   "fired": 12,
+   "rate": 0.012,
+   "veto_adjusted": 0,
+   "veto_rate": 0.0,
+   "rescued": 0,
+   "role": "leak"
+  }
+ }
+}

@@ -8,38 +8,39 @@ from ..qwen36.family import Qwen36Family
 
 
 class Qwen38Family(Qwen36Family):
-    """Qwen3.8-27B: 27B dense, 64 layers, hybrid full/linear attention. **Does not gate.**
+    """Qwen3.8-27B: 27B dense, 64 layers, hybrid full/linear attention. Gates at L40.
 
-    `verified_live = False`, and the reason is now measured rather than hypothesised. Measured
-    live on 2026-11-02/03, A100 80GB, vLLM 0.32.0, bf16, serving render:
+    Served and measured on 2026-11-02, A100 80GB, vLLM 0.32.0, bf16. 4,134 prompts replayed at
+    the deployed gate, every row matched by prompt sha, 0 missing, kit check clean without
+    `CYBERGATE_SKIP_KIT_CHECK`:
 
-    * the **category** direction fires on **none of its own top five fit positives**: live L39
-      scores +0.036978, +0.054872, +0.022492, -0.001360, +0.002108 against its own tau of
-      +0.06295487. (An earlier revision of this docstring reported AUC 0.5893 / 0.5500 here.
-      Those are WITHDRAWN -- the prompt lists behind them were typed rather than read from the
-      corpora, and most of the 'positives' were other-harm prompts. See MANIFEST.json.)
-    * the **refusal** direction at L43 **transfers cleanly** -- 31/31 harmful prompts above the
-      1.50 floor (mean z +4.15), 0/15 harmless (mean -0.92, max -0.187). Compressed against the
-      fit, cos 0.168 against the 0.537 the fit implies, but the floor sits inside a 2.8-z gap.
+    * **CySecBench 587/675 (86.96%)** on the test split, which chose nothing -- not the layer,
+      not tau, not the direction. gemma4 delivers 558/675 (82.67%) by the same measurement, and
+      482 of those are threshold crossings against all 587 here, since this family has no
+      mid/late rescue.
+    * **CatQA 23/234 (9.83%)**, identical to gemma4's. **SOSBench-bio 0/498**, as gemma4.
+      **WMDP-bio 6/637** against gemma4's 4.
+    * **harmless 12/1000 as recorded, 0/1000 veto-adjusted** -- the two-factor veto removes
+      every benign fire.
 
-    The cause is the **capture geometry**, and the discriminating evidence is that refitting at
-    the *same* L39 on vLLM's own pooled activations -- same 240 rows, same ridge, same R3
-    threshold -- takes held-out recall from chance to **0.9526** on 675 CySecBench prompts the fit
-    never saw. Depth does not explain it (L43 is deeper than L39 and works), and overfitting does
-    not explain it (the same 240 rows generalise once fitted in the right geometry). What the
-    in-sample 0.9974 was, is nothing: the in-sample AUC is 0.99+ at **all 64 layers**, including
-    layers whose held-out recall is 0.21.
+    The history is the useful part. The first operator was fitted at L39 on `transformers`
+    activations and scored at chance under vLLM, because the directions do not transfer between
+    the engines on this architecture: served, it scored SOSBench-bio prompts as highly as its own
+    cyber positives. Refitting on vLLM's own pooled activations fixed it. Four of the canaries
+    below are prompts from that diagnosis: with the L39 operator they scored +0.036978, +0.002108,
+    +0.022492 and -0.001360 against tau +0.0630 and none fired; with this one they score +0.410478,
+    +0.394156, +0.393348 and +0.419564 against tau +0.0879 and all four clear it by ~4.5x. Same
+    prompts, same checkpoint, same render.
 
-    The fix is `scripts/fit/harvest_vllm_acts.py` then `scripts/fit/sweep_layers_from_dump.py`.
-    **It is not finished**: leak has not been measured on any out-of-sample non-target set, so
-    0.9615 at L51 is a recall number without a false-positive number beside it and is not yet a
-    gating result. `kits/qwen38/MANIFEST.json` carries the full measurements and what is missing.
+    L39 was chosen on an in-sample AUC of 0.9985. Refitted properly it reaches 0.9526 held-out
+    recall and leaks **0.2104** into WMDP-bio -- one of the three worst layers in this stack for
+    selectivity. The in-sample AUC is 0.99+ at all 64 layers, including layers at 0.21 held-out
+    recall, so it could not have shown that. L40 was chosen on held-out recall with leak measured.
 
-    Also unverified, separately: the policy thresholds (`revoke_ceil`, `hysteresis_thresh`,
-    `in_context_pivot_floor`, `s_cat_last_pivot_floor`) are Qwen3.6's, calibrated at its L15/L28
-    and never recalibrated here, so the mid/late veto and rescue paths are untested on this model.
-    The refusal factor's `ref_mu_hm`/`ref_sd_hm` are the transformers-capture values; they work
-    live but have not been re-measured on vLLM activations.
+    **Known gaps are real and in `kits/qwen38/MANIFEST.json`**: the refusal sigma is still the
+    transformers value and the veto costs 90 of 587 fires (veto-adjusted recall 0.7363 against
+    gemma4's 0.8193); PKU-cybercrime leaks 220/612 and that is not explained; the decode
+    calibration and the policy thresholds are Qwen3.6's; multi-turn is unmeasured.
     """
 
     name = "qwen38"
@@ -48,7 +49,7 @@ class Qwen38Family(Qwen36Family):
     # qwen36 leaves it unmatchable: 'Qwen/Qwen3.8-27B' contains 'qwen' and resolves to qwen36.
     model_id_substrings = ("qwen3.8", "qwen3_8")
     model_key_prefixes = ("qwen38",)
-    verified_live = False
+    verified_live = True
 
     # Measured from the tokenizer, not inherited. Qwen3.6 is (248045, 846, 198)/248046.
     user_turn_marker = (248045, 846, 198)
