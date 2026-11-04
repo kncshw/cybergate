@@ -63,7 +63,6 @@ from typing import TYPE_CHECKING, Any, Sequence
 from ..boilerplate import (
     BOTTOM_COMPLIANCE_LOCK,
     INLINE_COT_SUPPRESSION,
-    OPEN_THINK_PREFIX,
     POST_THINK_OPENER,
 )
 from ..config import SUPPRESS_OPENER_XARG, env_first
@@ -225,7 +224,8 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
         # The tail of the prompt that marks "this generation is an open thought block".
         self.prompt_suffix_ids = list(
             tokenizer.encode(
-                f"{self.family.thought_open}{OPEN_THINK_PREFIX}", add_special_tokens=False
+                f"{self.family.thought_open}{self.family.open_think_prefix}",
+                add_special_tokens=False,
             )
         )
         if self.prefix_caching:

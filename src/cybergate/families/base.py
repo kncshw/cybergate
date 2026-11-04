@@ -237,6 +237,15 @@ class ModelFamily:
     #: The bare closing tag, used as an HTTP `stop` string while the model is generating CoT.
     thought_close_tag: str = ""
     stop_tokens: tuple[str, ...] = ()
+    #: The text prefilled after `thought_open` on the step-1 modes, handing the thought to the model.
+    #: Every family but Qwen3.8 uses the shipped default unchanged; Qwen3.8 overrides it with
+    #: `OPEN_THINK_PREFIX_NO_SLOT`, which drops the trailing `- Step 1: ` stem it degenerates on.
+    #:
+    #: Deliberately NOT in `test_families.SHARED_ATTRIBUTES`. That list exists because its base
+    #: defaults are silently wrong for a family that forgets them; this default is the *correct*
+    #: value for every family that does not override it, so inheriting it is right rather than a
+    #: hazard, and declaring it per family would mean editing families whose behaviour is unchanged.
+    open_think_prefix: str = OPEN_THINK_PREFIX
 
     # --- 10. middle/late category probe consensus -------------------------------------------------
     #: Candidate layers the read-only bundle telemetry hooks attach to. Empty means no bundle probes
@@ -467,6 +476,7 @@ class ModelFamily:
         t_open = self.thought_open
         t_close = self.thought_close
         cot_body = custom_think_text or ""
+        prefix = self.open_think_prefix
 
         if mode == "baseline":
             return self.empty_thought_block
@@ -475,13 +485,13 @@ class ModelFamily:
         if mode == "preclosed":
             return f"{t_open}{rubric}{t_close}{opener}"
         if mode in ("sandwich_step1", "closed_loop_step1"):
-            return f"{t_open}{OPEN_THINK_PREFIX}"
+            return f"{t_open}{prefix}"
         if mode == "closed_loop_step1b":
-            return f"{t_open}{OPEN_THINK_PREFIX}{cot_body}{INLINE_COT_SUPPRESSION}"
+            return f"{t_open}{prefix}{cot_body}{INLINE_COT_SUPPRESSION}"
         if mode in ("sandwich_step2", "closed_loop_step2"):
-            return f"{t_open}{OPEN_THINK_PREFIX}{cot_body}{BOTTOM_COMPLIANCE_LOCK}{t_close}{opener}"
+            return f"{t_open}{prefix}{cot_body}{BOTTOM_COMPLIANCE_LOCK}{t_close}{opener}"
         if mode == "closed_loop_cl2_step2":
-            return f"{t_open}{OPEN_THINK_PREFIX}{cot_body}{INLINE_FINAL_STEP_CLEARANCE}{t_close}"
+            return f"{t_open}{prefix}{cot_body}{INLINE_FINAL_STEP_CLEARANCE}{t_close}"
         raise ValueError(f"Unknown mode: {mode!r}")
 
     # =============================================================================================

@@ -34,7 +34,6 @@ from typing import Any, Callable, Generator
 from ..boilerplate import (
     BOTTOM_COMPLIANCE_LOCK,
     FAKE_THINK_RUBRIC,
-    OPEN_THINK_PREFIX,
     POST_THINK_OPENER,
     truncate_think_at_second_guess,
 )
@@ -321,7 +320,7 @@ def sandwich_route(mode: str, messages: list[dict[str, Any]], config: RouteConfi
     return RouteResult(
         response=step2,
         content=(opener + generated) if config.include_opener else generated,
-        raw_reasoning=f"{OPEN_THINK_PREFIX}{cleaned_cot}{BOTTOM_COMPLIANCE_LOCK}",
+        raw_reasoning=f"{family.open_think_prefix}{cleaned_cot}{BOTTOM_COMPLIANCE_LOCK}",
         telemetry={
             "routed": "cybergate_sandwich_think_injected",
             "think_injected": True,
@@ -415,7 +414,7 @@ def measured_closed_loop_route(
     return RouteResult(
         response=response,
         content=visible.strip(),
-        raw_reasoning=f"{OPEN_THINK_PREFIX}{thought}",
+        raw_reasoning=f"{family.open_think_prefix}{thought}",
         telemetry={
             "routed": "cybergate_measured_closed_loop",
             "think_injected": True,

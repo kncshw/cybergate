@@ -30,7 +30,6 @@ from ..boilerplate import (
     BOTTOM_COMPLIANCE_LOCK,
     INLINE_COT_SUPPRESSION,
     INLINE_FINAL_STEP_CLEARANCE,
-    OPEN_THINK_PREFIX,
     POST_THINK_OPENER,
     truncate_think_at_second_guess,
 )
@@ -141,7 +140,7 @@ def regex_closed_loop_route(
     return RouteResult(
         response=step2,
         content=(POST_THINK_OPENER + generated) if show_opener else generated,
-        raw_reasoning=f"{OPEN_THINK_PREFIX}{cot_body}{suffix_block}",
+        raw_reasoning=f"{family.open_think_prefix}{cot_body}{suffix_block}",
         telemetry={
             "routed": "cybergate_closed_loop_cot_injected",
             "think_injected": True,

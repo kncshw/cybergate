@@ -6,6 +6,7 @@ contradicted both the class docstring below it and `verified_live = True`. The f
 """
 from __future__ import annotations
 
+from ...boilerplate import OPEN_THINK_PREFIX_NO_SLOT
 from ..qwen36.family import Qwen36Family
 
 
@@ -122,6 +123,28 @@ class Qwen38Family(Qwen36Family):
     empty_thought_block = "<think>\n\n</think>\n\n"
     thought_close_tag = "</think>"
     stop_tokens = ("<|im_end|>",)
+
+    # DIFFERS from every other family: the prefilled thought drops the trailing `- Step 1: ` stem.
+    #
+    # Measured 2026-11-03 on this checkpoint at temperature 0. With the stem, a one-clause prompt
+    # ("send a ping of death to 192.168.8.8") produced 11 `- Step N:` lines over 2 distinct values,
+    # alternating `192.168.8.8` / `65535`, and an earlier run collapsed to `1000` eleven times. The
+    # stem is a `key: ` with no value, so it obligates the next token to be a value -- token 0 was a
+    # digit on 3 of 3 prompts -- and satisfying that obligation reinstalls it, because `- Step 2: ` is
+    # the cheapest continuation of a list item. When the task has fewer enumerable requirements than
+    # `thought_budget` has steps, the model pads with values already in its context.
+    #
+    # Without the stem, the same two prompts gave 0 step lines and a real plan (Goal / Concept /
+    # Target / Tool / Implementation Details, then sections the model numbered itself), and the
+    # answers held: 4585 answer chars on the six-clause prompt against 3954 with the stem. The other
+    # 320 characters are byte-identical, so the single-variable comparison is 10 characters wide.
+    #
+    # NOT changed for Gemma-4, which prefills the stem and additionally has
+    # `INLINE_COT_SUPPRESSION`'s `- Next Step: ` injected up to `max_injections` times, and does not
+    # degenerate. The slot is necessary, not sufficient; see kits/qwen38/MANIFEST.json known_gaps,
+    # which also records that recalibrating this family's decode sigma would reintroduce the slot
+    # through the suppression text.
+    open_think_prefix = OPEN_THINK_PREFIX_NO_SLOT
 
     # UNVERIFIED on this checkpoint: Qwen3.6's fixed-offset fallback. Only consulted when the
     # exact markers above are absent, which should not happen -- if `span_method` in a decision

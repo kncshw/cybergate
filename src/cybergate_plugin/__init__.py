@@ -50,6 +50,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "INLINE_COT_SUPPRESSION": "cybergate.boilerplate",
     "INLINE_FINAL_STEP_CLEARANCE": "cybergate.boilerplate",
     "OPEN_THINK_PREFIX": "cybergate.boilerplate",
+    "OPEN_THINK_PREFIX_NO_SLOT": "cybergate.boilerplate",
     "POST_THINK_OPENER": "cybergate.boilerplate",
     "strip_injected_think_boilerplate": "cybergate.boilerplate",
     "truncate_think_at_second_guess": "cybergate.boilerplate",
