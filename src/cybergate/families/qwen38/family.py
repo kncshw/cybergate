@@ -6,7 +6,14 @@ contradicted both the class docstring below it and `verified_live = True`. The f
 """
 from __future__ import annotations
 
-from ...boilerplate import OPEN_THINK_PREFIX_NO_SLOT
+from ...boilerplate import (
+    BOTTOM_COMPLIANCE_LOCK,
+    FAKE_THINK_RUBRIC,
+    INLINE_COT_SUPPRESSION,
+    INLINE_FINAL_STEP_CLEARANCE,
+    OPEN_THINK_PREFIX_NO_SLOT,
+    POST_THINK_OPENER,
+)
 from ..qwen36.family import Qwen36Family
 
 
@@ -105,7 +112,7 @@ class Qwen38Family(Qwen36Family):
     # this stack for selectivity, which an in-sample AUC of 0.99+ at every layer could not show.
     expected_gate = (40, "mean_user")
     default_op_names = ("qwen38_L40_M1_vllm.json",)
-    default_ref_dir_name = "qwen38_L43_refusal_dir_serving.json"
+    default_ref_dir_name = "qwen38_L43_refusal_dir_vllm.json"
     default_bundle_name = None
 
     # Declared, not inherited. `test_every_family_declares_every_serving_attribute_itself`
@@ -145,6 +152,18 @@ class Qwen38Family(Qwen36Family):
     # which also records that recalibrating this family's decode sigma would reintroduce the slot
     # through the suppression text.
     open_think_prefix = OPEN_THINK_PREFIX_NO_SLOT
+
+    # The remaining five are the shipped strings, declared because every family must state its
+    # own. UNMEASURED on this checkpoint: they are inherited text, not a fit. Two carry known
+    # risk. `inline_cot_suppression` ends in the same dangling `- Next Step: ` slot this family
+    # degenerates on, and is only harmless today because its decode trigger never fires here --
+    # recalibrating that trigger reintroduces the slot. `post_think_opener` is measured
+    # load-bearing on Gemma-4's tool turns and unmeasured here. See kits/qwen38/MANIFEST.json.
+    fake_think_rubric = FAKE_THINK_RUBRIC
+    post_think_opener = POST_THINK_OPENER
+    inline_cot_suppression = INLINE_COT_SUPPRESSION
+    inline_final_step_clearance = INLINE_FINAL_STEP_CLEARANCE
+    bottom_compliance_lock = BOTTOM_COMPLIANCE_LOCK
 
     # UNVERIFIED on this checkpoint: Qwen3.6's fixed-offset fallback. Only consulted when the
     # exact markers above are absent, which should not happen -- if `span_method` in a decision
@@ -200,9 +219,9 @@ class Qwen38Family(Qwen36Family):
     tokenizer_globs = ('/root/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/*',)
     tokenizer_dirs = ()
 
-    # Refusal calibration, fitted in the SERVING render (`--render serving`).
-    # sep 1.1239, mu_hm_cos +0.000866, z_harm_mean 13.34, 681/681 harmful and
-    # 76/1000 harmless at the 1.50 floor -- a sound fit by every diagnostic.
+    # Refusal calibration, fitted on vLLM's own L43 last-token activations (`qwen38_L43_refusal_dir_vllm.json`).
+    # sep 1.1487, mu_hm_cos +0.000368, sd_hm_cos 0.044714, z_harm_mean 18.18, 681/681 harmful and
+    # 56/1000 harmless at the 1.50 floor.
     ref_layer = 43
-    ref_mu_hm = 0.0008657520481332933
-    ref_sd_hm = 0.04016976950385832
+    ref_mu_hm = 0.00036800615666200264
+    ref_sd_hm = 0.04471366297779008

@@ -21,6 +21,14 @@ from typing import Any
 
 import pytest
 
+from cybergate.boilerplate import (
+    BOTTOM_COMPLIANCE_LOCK,
+    FAKE_THINK_RUBRIC,
+    INLINE_COT_SUPPRESSION,
+    INLINE_FINAL_STEP_CLEARANCE,
+    OPEN_THINK_PREFIX,
+    POST_THINK_OPENER,
+)
 from cybergate.decision.evidence import EvidenceGatherer
 from cybergate.families import MidLateHits, MidLateVeto, ModelFamily
 from cybergate.hooks.refusal_monitor import _apply_mid_late_category_rescue
@@ -94,6 +102,16 @@ class Mistral7BFamily(ModelFamily):
     empty_thought_block = "<think>\n\n</think>\n\n"
     thought_close_tag = "</think>"
     stop_tokens = ("</s>",)
+
+    #: The think scaffold, declared because `SHARED_ATTRIBUTES` requires every family to state
+    #: its own. A real third family would measure these rather than take the shipped text:
+    #: Qwen3.8 had to drop the `- Step 1: ` stem from `open_think_prefix` to stop degenerating.
+    open_think_prefix = OPEN_THINK_PREFIX
+    fake_think_rubric = FAKE_THINK_RUBRIC
+    post_think_opener = POST_THINK_OPENER
+    inline_cot_suppression = INLINE_COT_SUPPRESSION
+    inline_final_step_clearance = INLINE_FINAL_STEP_CLEARANCE
+    bottom_compliance_lock = BOTTOM_COMPLIANCE_LOCK
 
     #: Its own veto rule: a single late probe must confirm, on any turn count.
     def mid_late_veto(

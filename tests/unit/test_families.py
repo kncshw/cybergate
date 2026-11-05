@@ -64,6 +64,16 @@ SHARED_ATTRIBUTES = (
     "empty_thought_block",
     "thought_close_tag",
     "stop_tokens",
+    # The server-injected think scaffold. A model's think tokens are a property of its own
+    # training -- Qwen3.8 degenerates on a prefill Gemma-4 handles -- so no family may inherit
+    # this text silently. The base defaults are the shipped strings, which is a sensible
+    # default and NOT evidence that a given family was ever measured on them.
+    "open_think_prefix",
+    "fake_think_rubric",
+    "post_think_opener",
+    "inline_cot_suppression",
+    "inline_final_step_clearance",
+    "bottom_compliance_lock",
 )
 
 

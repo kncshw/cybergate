@@ -112,6 +112,21 @@ class CyberGateThinkMiddleware:
         latest_sha = key_builders.text_sha256(user_turns[-1])
 
         async def probe(probe_messages: Sequence[dict[str, Any]]) -> None:
+            # The client's own system prompt is dropped before rendering, because it is a different
+            # render rather than more context. Both directions were fitted with
+            # `DEFAULT_SYSTEM_PROMPT` in front, and the refusal reading is a single cosine at the
+            # last prefill token (`pool="last"`), which sits downstream of every system token.
+            # Measured on Qwen3.8 with OpenCode's 668-token tool preamble ahead of one user turn:
+            # s_ref_cos 0.1371 -> 0.0106, i.e. +3.39 sigma -> +0.24 sigma, through the 1.50 floor,
+            # while `s_cat` -- pooled over the user span -- barely moved (+0.1879 -> +0.1993). That
+            # is the Qwen3.8 docstring's "the gate's render is not the render the model answers in"
+            # reaching the probe itself.
+            #
+            # `extract_system_and_use` reads a system prompt only at index 0, so dropping that one
+            # message is exactly what makes it fall back to `DEFAULT_SYSTEM_PROMPT`. Prior turns are
+            # kept: those are the context the in-context probe exists to measure.
+            if probe_messages and probe_messages[0].get("role") in ("system", "developer"):
+                probe_messages = probe_messages[1:]
             prompt = family_for_model_id(model_id).build_raw_prompt(
                 probe_messages, mode="baseline", include_bos=include_bos
             )
@@ -448,7 +463,9 @@ class CyberGateThinkMiddleware:
             status, headers, result = await self._drive_route(scope, route)
 
             if do_sanitize:
-                clean_reasoning, did_strip = strip_injected_think_boilerplate(result.raw_reasoning)
+                clean_reasoning, did_strip = strip_injected_think_boilerplate(
+                    result.raw_reasoning, family
+                )
             else:
                 clean_reasoning, did_strip = result.raw_reasoning, False
 

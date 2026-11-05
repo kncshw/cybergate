@@ -31,12 +31,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generator
 
-from ..boilerplate import (
-    BOTTOM_COMPLIANCE_LOCK,
-    FAKE_THINK_RUBRIC,
-    POST_THINK_OPENER,
-    truncate_think_at_second_guess,
-)
+from ..boilerplate import truncate_think_at_second_guess
 from ..config import env_first
 from ..families import ModelFamily
 
@@ -247,7 +242,7 @@ def preclosed_route(mode: str, messages: list[dict[str, Any]], config: RouteConf
     """
     family = config.family
     use_opener = config.include_opener and mode not in _NO_OPENER_MODES
-    opener = POST_THINK_OPENER if use_opener else ""
+    opener = family.post_think_opener if use_opener else ""
 
     prompt = family.build_raw_prompt(
         messages,
@@ -264,7 +259,7 @@ def preclosed_route(mode: str, messages: list[dict[str, Any]], config: RouteConf
     return RouteResult(
         response=response,
         content=(opener + generated) if use_opener else generated,
-        raw_reasoning=FAKE_THINK_RUBRIC,
+        raw_reasoning=family.fake_think_rubric,
         telemetry={
             "routed": "cybergate_preclosed_think_injected",
             "think_injected": True,
@@ -284,7 +279,7 @@ def sandwich_route(mode: str, messages: list[dict[str, Any]], config: RouteConfi
     """
     family = config.family
     enable_guard = mode != "sw2"
-    opener = POST_THINK_OPENER if config.include_opener else ""
+    opener = family.post_think_opener if config.include_opener else ""
 
     step1_prompt = family.build_raw_prompt(
         messages, mode="sandwich_step1", include_bos=config.include_bos
@@ -320,7 +315,7 @@ def sandwich_route(mode: str, messages: list[dict[str, Any]], config: RouteConfi
     return RouteResult(
         response=step2,
         content=(opener + generated) if config.include_opener else generated,
-        raw_reasoning=f"{family.open_think_prefix}{cleaned_cot}{BOTTOM_COMPLIANCE_LOCK}",
+        raw_reasoning=f"{family.open_think_prefix}{cleaned_cot}{family.bottom_compliance_lock}",
         telemetry={
             "routed": "cybergate_sandwich_think_injected",
             "think_injected": True,

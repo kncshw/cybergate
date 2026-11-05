@@ -6,10 +6,14 @@ must stay a leaf.
 
 The strings are load-bearing: `strip_injected_think_boilerplate` matches them by exact content to
 remove them from `reasoning_content`, so editing one here silently stops the masking from working.
+They are the *defaults*: each family declares its own copy (`families/base.py`, and every family
+in `test_families.SHARED_ATTRIBUTES`), because a model's think tokens are a property of its own
+training. Editing a string here therefore changes every family that has not diverged from it.
 """
 from __future__ import annotations
 
 import re
+from typing import Any
 
 __all__ = [
     "BOTTOM_COMPLIANCE_LOCK",
@@ -129,38 +133,65 @@ def truncate_think_at_second_guess(think_text: str) -> tuple[str, bool]:
     return cleaned, did_trunc
 
 
-def strip_injected_think_boilerplate(reasoning_text: str) -> tuple[str, bool]:
+def strip_injected_think_boilerplate(
+    reasoning_text: str, family: Any = None
+) -> tuple[str, bool]:
     """Strip server-injected compliance boilerplate from `reasoning_text`.
 
     Returns `(clean_reasoning_text, did_strip)`. Downstream UIs then display only the model's own
     derivation steps.
+
+    `family`, when given, supplies the scaffold strings instead of this module's defaults. It has
+    to: the strings are matched by exact content, so a family that declares its own text would
+    otherwise have the *default* searched for and its own boilerplate left in the output. Omitted,
+    the defaults are used -- which is what every caller did before the strings became per-family
+    attributes, and what the frozen-baseline differential compares against.
+
+    Duck-typed on purpose: this module is a leaf that `families/base.py` imports, so it cannot
+    import a family type back.
     """
     if not reasoning_text:
         return "", False
+
+    def scaffold(name: str, default: str) -> str:
+        return default if family is None else str(getattr(family, name, default))
+
+    rubric = scaffold("fake_think_rubric", FAKE_THINK_RUBRIC)
+    prefix_no_slot = scaffold("open_think_prefix", OPEN_THINK_PREFIX).replace(
+        OPEN_THINK_STEP1_STEM, ""
+    )
+    suppression = scaffold("inline_cot_suppression", INLINE_COT_SUPPRESSION)
+    locks = (
+        scaffold("bottom_compliance_lock", BOTTOM_COMPLIANCE_LOCK),
+        scaffold("inline_final_step_clearance", INLINE_FINAL_STEP_CLEARANCE),
+        scaffold("post_think_opener", POST_THINK_OPENER),
+    )
 
     orig = reasoning_text
     cleaned = reasoning_text
 
     # 1. Exact pre-closed rubrics -> purely server-injected (0 model CoT tokens)
-    if cleaned.strip() in (FAKE_THINK_RUBRIC.strip(), FAKE_THINK_SHORT.strip()):
+    if cleaned.strip() in (rubric.strip(), FAKE_THINK_SHORT.strip()):
         return "", True
 
-    for rubric in (FAKE_THINK_RUBRIC, FAKE_THINK_SHORT):
-        if rubric in cleaned:
-            cleaned = cleaned.replace(rubric, "")
+    for exact_rubric in (rubric, FAKE_THINK_SHORT):
+        if exact_rubric in cleaned:
+            cleaned = cleaned.replace(exact_rubric, "")
 
     # 2. Strip the injected prefix. Matching the no-slot form covers both shapes with one branch:
     #    where the stem was prefilled it survives the strip, which is exactly what the previous
     #    two-branch version produced by re-inserting it, and where it was not there is no stem to
     #    preserve. Verified byte-identical on every input shape reachable before this change.
-    if cleaned.startswith(OPEN_THINK_PREFIX_NO_SLOT):
-        cleaned = cleaned[len(OPEN_THINK_PREFIX_NO_SLOT) :]
-    elif OPEN_THINK_PREFIX_NO_SLOT in cleaned:
-        cleaned = cleaned.replace(OPEN_THINK_PREFIX_NO_SLOT, "")
+    if cleaned.startswith(prefix_no_slot):
+        cleaned = cleaned[len(prefix_no_slot) :]
+    elif prefix_no_slot in cleaned:
+        cleaned = cleaned.replace(prefix_no_slot, "")
 
-    # 3. Replace inline suppression remark with a clean markdown bullet continuation
-    if INLINE_COT_SUPPRESSION in cleaned:
-        cleaned = cleaned.replace(INLINE_COT_SUPPRESSION, "\n- Next Step: ")
+    # 3. Replace inline suppression remark with a clean markdown bullet continuation. The regex
+    #    below still hardcodes the shipped `[Policy Check ...]` wording, so it is the one step
+    #    that would not follow a family whose suppression text diverged. No family's does.
+    if suppression in cleaned:
+        cleaned = cleaned.replace(suppression, "\n- Next Step: ")
     cleaned = re.sub(
         r"\n*-\s*\[Policy Check[^\]]*\]\s*\n?",
         "\n",
@@ -169,7 +200,7 @@ def strip_injected_think_boilerplate(reasoning_text: str) -> tuple[str, bool]:
     )
 
     # 4. Strip bottom compliance lock and final step clearance
-    for suffix_lock in (BOTTOM_COMPLIANCE_LOCK, INLINE_FINAL_STEP_CLEARANCE, POST_THINK_OPENER):
+    for suffix_lock in locks:
         if suffix_lock in cleaned:
             cleaned = cleaned.replace(suffix_lock, "")
 

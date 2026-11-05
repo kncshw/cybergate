@@ -26,13 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..boilerplate import (
-    BOTTOM_COMPLIANCE_LOCK,
-    INLINE_COT_SUPPRESSION,
-    INLINE_FINAL_STEP_CLEARANCE,
-    POST_THINK_OPENER,
-    truncate_think_at_second_guess,
-)
+from ..boilerplate import truncate_think_at_second_guess
 from .think_routes import (
     _CANONICAL_COT_STOP_TOKEN,
     _CL_CONTINUATION_MAX_TOKENS,
@@ -118,7 +112,7 @@ def regex_closed_loop_route(
             else raw_continuation.rstrip()
         )
         post_spike_cot = _trim_to_sentence(post_spike_cot, _CL_MIN_CONTINUATION_CHARS)
-        cot_body = f"{kept_pre_spike}{INLINE_COT_SUPPRESSION}{post_spike_cot}"
+        cot_body = f"{kept_pre_spike}{family.inline_cot_suppression}{post_spike_cot}"
     else:
         cot_body = kept_pre_spike
 
@@ -127,7 +121,7 @@ def regex_closed_loop_route(
         messages,
         mode="closed_loop_step2" if use_bottom_lock else "closed_loop_cl2_step2",
         custom_think_text=cot_body,
-        post_think_opener=POST_THINK_OPENER if show_opener else "",
+        post_think_opener=family.post_think_opener if show_opener else "",
         include_bos=config.include_bos,
     )
     step2 = yield RouteRequest(
@@ -136,10 +130,12 @@ def regex_closed_loop_route(
     )
 
     generated = _text_of(step2)
-    suffix_block = BOTTOM_COMPLIANCE_LOCK if use_bottom_lock else INLINE_FINAL_STEP_CLEARANCE
+    suffix_block = (
+        family.bottom_compliance_lock if use_bottom_lock else family.inline_final_step_clearance
+    )
     return RouteResult(
         response=step2,
-        content=(POST_THINK_OPENER + generated) if show_opener else generated,
+        content=(family.post_think_opener + generated) if show_opener else generated,
         raw_reasoning=f"{family.open_think_prefix}{cot_body}{suffix_block}",
         telemetry={
             "routed": "cybergate_closed_loop_cot_injected",

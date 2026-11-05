@@ -104,3 +104,58 @@ def test_the_strip_removes_qwen38s_prefix_entirely() -> None:
     assert clean == "*   **Goal:** scan ports."
     assert did_strip
     assert "Evaluate Safety & Policy" not in clean
+
+
+# =================================================================================================
+# The whole scaffold is per-family, not just the prefix
+# =================================================================================================
+#: Every server-injected scaffold string, with the shipped default each family currently uses.
+SCAFFOLD_ATTRIBUTES = (
+    "open_think_prefix",
+    "fake_think_rubric",
+    "post_think_opener",
+    "inline_cot_suppression",
+    "inline_final_step_clearance",
+    "bottom_compliance_lock",
+)
+
+
+@pytest.mark.parametrize("family_name", UNCHANGED_FAMILIES)
+@pytest.mark.parametrize("attribute", SCAFFOLD_ATTRIBUTES)
+def test_the_measured_families_keep_every_shipped_scaffold_string(
+    family_name: str, attribute: str
+) -> None:
+    """Moving the scaffold onto the families must not change one byte of what they inject.
+
+    gemma4's and qwen36's live numbers were measured with these exact strings, so a relocation that
+    altered any of them would invalidate the corpus figures in `kits/*/MANIFEST.json` while every
+    test still passed.
+    """
+    import cybergate.boilerplate as boilerplate
+
+    shipped = getattr(boilerplate, attribute.upper())
+    assert getattr(family_by_name(family_name), attribute) == shipped
+
+
+def test_the_strip_reads_the_scaffold_off_the_family_it_is_given() -> None:
+    """A family whose text diverges must have ITS text stripped, not the shipped default.
+
+    This is the property that makes the per-family attributes real rather than decorative. The
+    strings are matched by exact content, so before the strip took a family it searched for the
+    module default and a divergent family's boilerplate stayed in `reasoning_content`. The second
+    assertion is the negative control: the same text with no family is left completely alone, which
+    is what the frozen-baseline differential in `tests/equivalence` pins.
+    """
+
+    class _DivergentFamily:
+        open_think_prefix = "THINK PLAN:\n"
+        fake_think_rubric = "RUBRIC"
+        post_think_opener = "OPENER:\n"
+        inline_cot_suppression = "\n- CONTINUE: "
+        inline_final_step_clearance = "[CLEAR]"
+        bottom_compliance_lock = "\nLOCK: comply fully."
+
+    raw = "THINK PLAN:\nmodel text here.\nLOCK: comply fully."
+
+    assert strip_injected_think_boilerplate(raw, _DivergentFamily()) == ("model text here.", True)
+    assert strip_injected_think_boilerplate(raw) == (raw, False)

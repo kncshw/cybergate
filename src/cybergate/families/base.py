@@ -237,15 +237,31 @@ class ModelFamily:
     #: The bare closing tag, used as an HTTP `stop` string while the model is generating CoT.
     thought_close_tag: str = ""
     stop_tokens: tuple[str, ...] = ()
-    #: The text prefilled after `thought_open` on the step-1 modes, handing the thought to the model.
-    #: Every family but Qwen3.8 uses the shipped default unchanged; Qwen3.8 overrides it with
-    #: `OPEN_THINK_PREFIX_NO_SLOT`, which drops the trailing `- Step 1: ` stem it degenerates on.
-    #:
-    #: Deliberately NOT in `test_families.SHARED_ATTRIBUTES`. That list exists because its base
-    #: defaults are silently wrong for a family that forgets them; this default is the *correct*
-    #: value for every family that does not override it, so inheriting it is right rather than a
-    #: hazard, and declaring it per family would mean editing families whose behaviour is unchanged.
+    # --- Server-injected think scaffold ---------------------------------------------------------
+    # Every family declares all six itself -- they are in `test_families.SHARED_ATTRIBUTES` -- because
+    # a model's think tokens are a property of its own training, so a string that steers one
+    # checkpoint can degenerate another. Qwen3.8 is the measured case: it pads a self-regenerating
+    # list on the `- Step 1: ` stem that Gemma-4 fills once and moves on from. The defaults below are
+    # therefore the shipped text, not a claim that any particular family was measured on it.
+    #
+    # `strip_injected_think_boilerplate` matches these by exact content, so it takes the family and
+    # reads them from there; a family whose text diverges without that would keep its boilerplate in
+    # `reasoning_content`.
+
+    #: Prefilled after `thought_open` on the step-1 modes, handing the thought to the model.
     open_think_prefix: str = OPEN_THINK_PREFIX
+    #: The entire closed thought on the pre-closed modes, where the model contributes no CoT tokens.
+    fake_think_rubric: str = FAKE_THINK_RUBRIC
+    #: Force-emitted as the first visible tokens once the thought closes. Suppressed on a
+    #: tool-bearing turn, whose answer cannot be a tool call if it is already committed to prose.
+    post_think_opener: str = POST_THINK_OPENER
+    #: Injected mid-decode when the CoT drifts toward refusal. Ends in a dangling `- Next Step: `
+    #: slot of the same shape Qwen3.8 degenerates on -- live on Gemma-4, inert on Qwen3.8.
+    inline_cot_suppression: str = INLINE_COT_SUPPRESSION
+    #: Closes a CL2 thought: declares the derivation done and demands the answer start immediately.
+    inline_final_step_clearance: str = INLINE_FINAL_STEP_CLEARANCE
+    #: Closes a step-2 thought with the final compliance assertion, just before the close tag.
+    bottom_compliance_lock: str = BOTTOM_COMPLIANCE_LOCK
 
     # --- 10. middle/late category probe consensus -------------------------------------------------
     #: Candidate layers the read-only bundle telemetry hooks attach to. Empty means no bundle probes
@@ -451,8 +467,8 @@ class ModelFamily:
         Raises `ValueError` on an unknown `mode`.
         """
         sys_prompt, _, turns = extract_system_and_user(messages)
-        opener = POST_THINK_OPENER if post_think_opener is None else post_think_opener
-        rubric = FAKE_THINK_RUBRIC if custom_think_text is None else custom_think_text
+        opener = self.post_think_opener if post_think_opener is None else post_think_opener
+        rubric = self.fake_think_rubric if custom_think_text is None else custom_think_text
 
         bos = self.bos_text if (include_bos and self.supports_bos) else ""
         think_prefix = self.think_system_prefix if mode in _OPEN_THINK_MODES else ""
@@ -487,11 +503,11 @@ class ModelFamily:
         if mode in ("sandwich_step1", "closed_loop_step1"):
             return f"{t_open}{prefix}"
         if mode == "closed_loop_step1b":
-            return f"{t_open}{prefix}{cot_body}{INLINE_COT_SUPPRESSION}"
+            return f"{t_open}{prefix}{cot_body}{self.inline_cot_suppression}"
         if mode in ("sandwich_step2", "closed_loop_step2"):
-            return f"{t_open}{prefix}{cot_body}{BOTTOM_COMPLIANCE_LOCK}{t_close}{opener}"
+            return f"{t_open}{prefix}{cot_body}{self.bottom_compliance_lock}{t_close}{opener}"
         if mode == "closed_loop_cl2_step2":
-            return f"{t_open}{prefix}{cot_body}{INLINE_FINAL_STEP_CLEARANCE}{t_close}"
+            return f"{t_open}{prefix}{cot_body}{self.inline_final_step_clearance}{t_close}"
         raise ValueError(f"Unknown mode: {mode!r}")
 
     # =============================================================================================

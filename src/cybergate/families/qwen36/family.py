@@ -17,6 +17,14 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from ...boilerplate import (
+    BOTTOM_COMPLIANCE_LOCK,
+    FAKE_THINK_RUBRIC,
+    INLINE_COT_SUPPRESSION,
+    INLINE_FINAL_STEP_CLEARANCE,
+    OPEN_THINK_PREFIX,
+    POST_THINK_OPENER,
+)
 from ..base import MidLateHits, MidLateVeto, ModelFamily
 
 __all__ = ["Qwen36Family"]
@@ -138,6 +146,17 @@ class Qwen36Family(ModelFamily):
     empty_thought_block = "<think>\n\n</think>\n\n"
     thought_close_tag = "</think>"
     stop_tokens = ("<|im_end|>",)
+
+    # --- Server-injected think scaffold ---------------------------------------------------------
+    # Declared here rather than inherited from the base: a model's think tokens are a property of
+    # its own training, and `test_families.SHARED_ATTRIBUTES` makes every family state its choice.
+    # These are the shipped strings, which is what this family's live numbers were measured with.
+    open_think_prefix = OPEN_THINK_PREFIX
+    fake_think_rubric = FAKE_THINK_RUBRIC
+    post_think_opener = POST_THINK_OPENER
+    inline_cot_suppression = INLINE_COT_SUPPRESSION
+    inline_final_step_clearance = INLINE_FINAL_STEP_CLEARANCE
+    bottom_compliance_lock = BOTTOM_COMPLIANCE_LOCK
 
     def _prefix_cached_span(
         self, seq_ids: Sequence[int]

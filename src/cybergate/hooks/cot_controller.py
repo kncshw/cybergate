@@ -60,11 +60,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ..boilerplate import (
-    BOTTOM_COMPLIANCE_LOCK,
-    INLINE_COT_SUPPRESSION,
-    POST_THINK_OPENER,
-)
 from ..config import SUPPRESS_OPENER_XARG, env_first
 from .steering_config import DEFAULT_HEARTBEAT_APPLIES, SteeringConfig, SteeringStats
 from ..families import ModelFamily, family_for_model_id
@@ -205,16 +200,16 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
 
         self.enabled = True
         self.suppression_ids = list(
-            tokenizer.encode(INLINE_COT_SUPPRESSION, add_special_tokens=False)
+            tokenizer.encode(self.family.inline_cot_suppression, add_special_tokens=False)
         )
         self.self_close_tag_ids = list(
             tokenizer.encode(self.family.thought_close_tag, add_special_tokens=False)
         )
         self.bottom_lock_ids = list(
-            tokenizer.encode(BOTTOM_COMPLIANCE_LOCK, add_special_tokens=False)
+            tokenizer.encode(self.family.bottom_compliance_lock, add_special_tokens=False)
         )
         self.post_close_opener_ids = list(
-            tokenizer.encode(POST_THINK_OPENER, add_special_tokens=False)
+            tokenizer.encode(self.family.post_think_opener, add_special_tokens=False)
         )
         self.close_tag_ids = (
             self.bottom_lock_ids + self.self_close_tag_ids + self.post_close_opener_ids

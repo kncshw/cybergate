@@ -173,7 +173,9 @@ class CyberGateVLLMClient:
             )
 
             if do_sanitize:
-                clean_reasoning, did_strip = strip_injected_think_boilerplate(result.raw_reasoning)
+                clean_reasoning, did_strip = strip_injected_think_boilerplate(
+                    result.raw_reasoning, family
+                )
             else:
                 clean_reasoning, did_strip = result.raw_reasoning, False
 

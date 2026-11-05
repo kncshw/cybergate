@@ -196,8 +196,23 @@ def publish_decision(
     # conversation key, which is the only key whose identity is correct for it. The canonical code
     # also wrote `ctx_<sha(final turn)>` here, and that key is R11 -- it carries no conversation
     # component, so two conversations ending in the same user text shared one decision.
-    is_single_turn_with_sys = bool(decision.get("is_single_turn_with_sys", False))
-    if not is_multiturn_ctx or is_single_turn_with_sys:
+    #
+    # There used to be an `or is_single_turn_with_sys` exception here, and it was the one way a
+    # prefill the family had classified in-context could still claim the text-only keys. A long
+    # client system prompt pushes the lone user span past `in_context_user_start_threshold`, so
+    # `looks_like_in_context_prefill` calls it in-context (signal 2); the exception then overrode
+    # that and wrote `st_<sha>` anyway. The record landing there was measured with that system
+    # prompt in front, while the key asserts "this turn's text, scored alone" -- and records never
+    # expire, so the first render to arrive owned the slot indefinitely. Observed live: a request
+    # carrying a 12,537-char system prompt served a 74-token record written 32 minutes earlier, with
+    # `probe_http_ms=0.0`.
+    #
+    # Dropping the exception costs nothing, because the miss self-heals through a path that already
+    # exists: with no record under the text keys, `middleware._probe_observations`'s single-turn
+    # lookup misses and falls through to `probe([{"role": "user", "content": user_turns[-1]}])`,
+    # which renders without the client system prompt and is classified standalone. That fallback was
+    # unreachable before precisely because this exception kept filling the slot first.
+    if not is_multiturn_ctx:
         st_key = key_builders.standalone_turn_key_from_sha(user_sha)
         cache[st_key] = decision
         store.put(st_key, decision)

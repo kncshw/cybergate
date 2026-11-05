@@ -12,7 +12,8 @@
   },
   "files": {
     "operator": "qwen38_L40_M1_vllm.json",
-    "refusal_direction": "qwen38_L43_refusal_dir_serving.json",
+    "refusal_direction": "qwen38_L43_refusal_dir_vllm.json",
+    "superseded_refusal_direction": "qwen38_L43_refusal_dir_serving.json",
     "superseded_operator": "qwen38_L39_M1_serving.json",
     "rejected_operator_gate_above_ref_layer": "qwen38_L55_M1_vllm.json",
     "canaries": "canaries.json"
@@ -45,7 +46,7 @@
     },
     "in_sample_auc": 0.9988,
     "in_sample_auc_note": "Reported only so it is not mistaken for evidence. It is 0.99+ at all 64 layers.",
-    "refusal_quality": "Unchanged and NOT refitted: the L43 refusal direction transfers as captured -- 31/31 harmful prompts above the 1.50 floor at mean z +4.15, 0/15 harmless at mean -0.92. Its mu_hm/sd_hm are still the transformers-capture values; they work live but have not been re-measured on vLLM activations. Fitted on 681 harmful + 1000 harmless rows, which is NOT the 692/554 convention the shipped kits use, so this sigma scale is not comparable to gemma4's or qwen36's.",
+    "refusal_quality": "Refitted on vLLM's own L43 last-token activations (qwen38_L43_refusal_dir_vllm.json, 681 harmful + 1000 harmless rows): sep=1.148685, mu_hm_cos=+0.000368006157, sd_hm_cos=0.044713662978, mu_harm_cos=+0.813062, z_harm_mean=+18.18sigma, 681/681 harmful above 1.50sigma and 56/1000 harmless above 1.50sigma. The superseded transformers direction (qwen38_L43_refusal_dir_serving.json) had cosine +0.2222 (77.2 deg) against the vLLM direction.",
     "fitted_by": "scripts/fit/harvest_vllm_acts.py + scripts/fit/sweep_layers_from_dump.py, 2026-11-02, A100 80GB, bf16",
     "gate_layer_note": "L40. L55 scored higher (0.9230 at 0.0769) but sits above ref_layer; see gate.constraint."
   },
