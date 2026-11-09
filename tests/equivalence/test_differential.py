@@ -2,7 +2,7 @@
 
 For every case, both implementations read the same `/dev/shm`-shaped records and are handed the same
 messages, and every key the canonical payload emits must match exactly. This is the behaviour-
-preservation proof for Phase 2 (REFACTOR_PLAN.md §4): any mismatch is a port error.
+preservation proof: any mismatch is a port error.
 
 Two properties beyond equality are asserted separately at the bottom of this module: determinism and
 order independence.
@@ -153,11 +153,13 @@ def test_every_branch_is_covered(
     quietly going green on a subset. `NO_OBSERVATION` is excluded because the behaviour-preserving
     policy never emits it -- it exists for the Phase 6 fix of R14.
 
-    `NEURAL_REVOKED` is also excluded, and that is a finding rather than a gap: it is unreachable.
-    Reaching Step 2C requires no refusal signal, and surviving Step 2A requires the in-context score
-    to be at or above the in-context pivot floor of 0.0750 -- which already implies it is above both
-    families' hysteresis floors (Gemma 0.0650, Qwen 0.0500), so `hysteresis_holds` always holds and
-    the revocation below it cannot be reached. Recorded as defect D2 in docs/ARCHITECTURE.md.
+    `NEURAL_REVOKED` is also excluded from this equivalence table (`GEMMA_OP` gates at L10, an
+    early layer where `operating_point_values(10)` sets `in_context_pivot_floor = 0.0750` above
+    `hysteresis_thresh = 0.0650`, so surviving Step 2A implies `hysteresis_holds` is true). On the
+    shipped L16 Gemma-4 operator (`in_context_pivot_floor = -0.0300`, `hysteresis_thresh = +0.0350`)
+    and on Qwen (`in_context_pivot_floor = -0.0300`, `hysteresis_thresh = -0.0250`), a score between
+    `in_context_pivot_floor` and `hysteresis_thresh` can reach `NEURAL_REVOKED`. See D2 in
+    `docs/ARCHITECTURE.md`.
     """
     from cybergate.decision import Branch
     from cybergate.decision.api import make_gatherer

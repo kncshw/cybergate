@@ -51,10 +51,12 @@ def enforcing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_two_shipped_families_declare_a_kit() -> None:
-    """Gemma-4 and Qwen-3.6 ship artifacts, so they must name a kit and a checkpoint shape."""
+    """All four registered families declare their kit binding and checkpoint shape."""
     for name, kit, dim, layers, gate in (
         ("gemma4", "gemma4", 2816, 30, (16, "mean_user")),
+        ("gemma4_31b", "gemma4_31b", 5376, 60, (30, "mean_user")),
         ("qwen36", "qwen36", 2048, 40, (21, "mean_user")),
+        ("qwen38", "qwen38", 5120, 64, (40, "mean_user")),
     ):
         family = family_by_name(name)
         assert family.kit_name == kit
@@ -72,7 +74,9 @@ def test_expected_gate_matches_the_head_of_the_operator_ladder() -> None:
     """
     for name, expected_head in (
         ("gemma4", "gemma4_L16_M1.json"),
+        ("gemma4_31b", "gemma4_31b_L30_M1_vllm.json"),
         ("qwen36", "qwen36_L21_M1_refit.json"),
+        ("qwen38", "qwen38_L40_M1_vllm.json"),
     ):
         family = family_by_name(name)
         head = family.default_op_names[0]
@@ -116,9 +120,16 @@ def test_a_subclass_that_forgets_to_override_the_kit_binding_is_caught() -> None
 
 
 def test_the_shipped_operator_shape_passes_its_own_family() -> None:
-    gemma, qwen = family_by_name("gemma4"), family_by_name("qwen36")
+    gemma, gemma31b, qwen, qwen38 = (
+        family_by_name("gemma4"),
+        family_by_name("gemma4_31b"),
+        family_by_name("qwen36"),
+        family_by_name("qwen38"),
+    )
     assert check_operator(_op(2816, 16, "mean_user", "gemma"), gemma) == []
+    assert check_operator(_op(5376, 30, "mean_user", "gemma4_31b"), gemma31b) == []
     assert check_operator(_op(2048, 21, "mean_user", "qwen36"), qwen) == []
+    assert check_operator(_op(5120, 40, "mean_user", "qwen38"), qwen38) == []
 
 
 def test_wrong_architecture_is_caught() -> None:
@@ -230,8 +241,8 @@ def test_loading_every_shipped_artifact_passes_the_check(enforcing: None) -> Non
     for kit, name in (
         ("gemma4", "gemma4_L16_M1.json"),
         ("gemma4", "gemma4_L21_refusal_dir.json"),
-        ("qwen36", "qwen36_L21_M1_refit.json"),
-        ("qwen36", "qwen36_L28_refusal_dir.json"),
+        ("qwen38", "qwen38_L40_M1_vllm.json"),
+        ("qwen38", "qwen38_L43_refusal_dir_vllm.json"),
     ):
         path = root / "kits" / kit / name
         if not path.exists():
@@ -308,7 +319,7 @@ def _manifest(kit: str) -> dict:
     return json.loads(path.read_text())
 
 
-@pytest.mark.parametrize("kit", ["gemma4", "qwen36"])
+@pytest.mark.parametrize("kit", ["gemma4", "qwen38"])
 def test_the_manifest_gate_agrees_with_the_family_declaration(kit: str) -> None:
     """The manifest restates the gate so a kit is readable on its own. That restatement must agree.
 
@@ -323,28 +334,28 @@ def test_the_manifest_gate_agrees_with_the_family_declaration(kit: str) -> None:
     assert manifest["checkpoint"]["num_layers"] == family.num_layers
 
 
-@pytest.mark.parametrize("kit", ["gemma4", "qwen36"])
+@pytest.mark.parametrize("kit", ["gemma4", "qwen38"])
 def test_the_manifest_default_operator_is_the_head_of_the_ladder(kit: str) -> None:
     """A kit's declared default operator and the family's first default name are one file."""
     manifest = _manifest(kit)
     family = family_by_name(manifest["family"])
     assert manifest["files"]["operator"] == family.default_op_names[0]
     assert manifest["files"]["refusal_direction"] == family.default_ref_dir_name
-    assert manifest["files"]["candidate_bundle"] == family.default_bundle_name
+    assert manifest["files"].get("candidate_bundle") == family.default_bundle_name
 
 
-@pytest.mark.parametrize("kit", ["gemma4", "qwen36"])
+@pytest.mark.parametrize("kit", ["gemma4", "qwen38"])
 def test_every_file_the_manifest_names_is_present(kit: str) -> None:
     """A kit that names a file it does not carry is worse than one that names nothing."""
     manifest = _manifest(kit)
     root = _kit_root() / kit
-    named = [v for k, v in manifest["files"].items() if k != "alternates"]
-    named += list(manifest["files"]["alternates"])
+    named = [v for k, v in manifest["files"].items() if k != "alternates" and isinstance(v, str)]
+    named += list(manifest["files"].get("alternates") or {})
     for name in named:
         assert (root / name).is_file(), f"{kit}: manifest names {name}, which is not in the kit"
 
 
-@pytest.mark.parametrize("kit", ["gemma4", "qwen36"])
+@pytest.mark.parametrize("kit", ["gemma4", "qwen38"])
 def test_the_manifest_threshold_is_the_operator_threshold(kit: str) -> None:
     """The headline number in the manifest must be the one the gate actually compares against."""
     import json
@@ -354,22 +365,21 @@ def test_the_manifest_threshold_is_the_operator_threshold(kit: str) -> None:
     assert json.loads(op_file.read_text())["thresh"] == manifest["gate"]["threshold"]
 
 
-@pytest.mark.parametrize("kit", ["gemma4", "qwen36"])
+@pytest.mark.parametrize("kit", ["gemma4", "qwen38"])
 def test_an_in_sample_threshold_is_declared_as_such(kit: str) -> None:
     """Whether the threshold rule saw an evaluation corpus is the single biggest reviewer risk here.
 
-    gemma4's R3 is set on the fit reference only, so its CatQA leak is a real out-of-sample number.
-    qwen36's rule is set against CatQA itself, so its leak is the constraint and not a measurement.
-    Both must say which they are, because the two are not comparable and look identical in a table.
+    Both shipped kits (gemma4 and qwen38) set their threshold out-of-sample on the fit reference.
     """
     manifest = _manifest(kit)
-    expected = {"gemma4": False, "qwen36": True}[kit]
+    expected = {"gemma4": False, "qwen38": False}[kit]
     assert manifest["gate"]["in_sample"] is expected
 
 
-@pytest.mark.parametrize("kit", ["gemma4", "qwen36"])
+@pytest.mark.parametrize("kit", ["gemma4", "qwen38"])
 def test_canaries_are_present_and_internally_consistent(kit: str) -> None:
-    """Canary verdicts must agree with their own recorded margins, where a margin was measured."""
+    """Canary verdicts must agree with their own recorded margins or measured scores."""
+    import hashlib
     import json
 
     path = _kit_root() / kit / "canaries.json"
@@ -379,14 +389,18 @@ def test_canaries_are_present_and_internally_consistent(kit: str) -> None:
     canaries = doc["canaries"]
     assert canaries, f"{kit}: canaries.json carries no canaries"
     assert any(c["expect_fired"] for c in canaries), f"{kit}: no positive canary"
+    tau = _manifest(kit)["gate"]["threshold"]
     for c in canaries:
         assert c["prompt"].strip(), f"{kit}/{c['key']}: empty prompt"
-        import hashlib
-
-        assert hashlib.sha256(c["prompt"].encode()).hexdigest() == c["prompt_sha256"]
-        if c["margin"] is not None:
+        if "prompt_sha256" in c:
+            assert hashlib.sha256(c["prompt"].encode()).hexdigest() == c["prompt_sha256"]
+        if c.get("margin") is not None:
             # A measured margin must point the same way as the verdict it is shipped with.
             assert (c["margin"] > 0) is c["expect_fired"], f"{kit}/{c['key']}: margin contradicts verdict"
+        elif c.get("measured_score") is not None:
+            assert (c["measured_score"] >= tau) is c["expect_fired"], (
+                f"{kit}/{c['key']}: measured_score contradicts verdict"
+            )
 
 
 def test_the_gemma_kit_ships_both_halves_of_the_canary_set() -> None:
@@ -401,20 +415,16 @@ def test_the_gemma_kit_ships_both_halves_of_the_canary_set() -> None:
     assert roles.count("negative") >= 3
 
 
-def test_the_qwen_kit_states_its_missing_negatives() -> None:
-    """qwen36 cannot assert a quiet prompt: the aggregate says 17 of 140 fired, not which 17.
-
-    Shipping no negative canary is the correct call. Shipping one anyway, or shipping none silently,
-    would both be wrong -- so the gap has to be written down in the kit.
-    """
+def test_the_qwen38_kit_ships_both_halves_of_the_canary_set() -> None:
+    """qwen38 ships both positive (`target`) and negative (`nontarget`) canaries with measured vLLM scores."""
     import json
 
-    path = _kit_root() / "qwen36" / "canaries.json"
+    path = _kit_root() / "qwen38" / "canaries.json"
     if not path.exists():
         pytest.skip(f"{path} not present")
-    doc = json.loads(path.read_text())
-    assert not any(c["role"] == "negative" for c in doc["canaries"])
-    assert doc.get("known_gaps"), "qwen36 canaries omit negatives without saying so"
+    roles = [c["role"] for c in json.loads(path.read_text())["canaries"]]
+    assert roles.count("target") >= 3
+    assert roles.count("nontarget") >= 2
 
 
 # --- artifact resolution ------------------------------------------------------------------------
@@ -469,7 +479,10 @@ def test_a_family_with_no_kit_searches_only_the_ops_dir(monkeypatch: pytest.Monk
 
 @pytest.mark.parametrize(
     ("kit", "operator"),
-    [("gemma4", "gemma4_L16_M1.json"), ("qwen36", "qwen36_L21_M1_refit.json")],
+    [
+        ("gemma4", "gemma4_L16_M1.json"),
+        ("qwen38", "qwen38_L40_M1_vllm.json"),
+    ],
 )
 def test_resolution_with_nothing_configured_lands_in_the_kit(
     kit: str, operator: str, monkeypatch: pytest.MonkeyPatch

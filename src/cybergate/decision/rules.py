@@ -51,7 +51,7 @@ def prior_unlock_discarded(
     not), and the canonical loop that calls it neither breaks nor lets Step 2B maintenance run
     afterwards -- so one low-scoring interjection throws away a legitimate unlock even when the
     refusal monitor is at four times the maintenance floor. Preserved as-is; see
-    REFACTOR_PLAN.md §5 R6.
+    `tests/unit/test_regressions.py` (R6).
     """
     if prev_score < revoke_ceil:
         return True

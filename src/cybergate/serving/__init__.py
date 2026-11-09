@@ -8,10 +8,13 @@ from __future__ import annotations
 from .client import CyberGateVLLMClient
 from .middleware import CyberGateThinkMiddleware
 from .prompts import build_raw_prompt_for_model, detect_model_family
+from .proxy import start_background_proxy_server, stop_background_proxy_server
 
 __all__ = [
     "CyberGateThinkMiddleware",
     "CyberGateVLLMClient",
     "build_raw_prompt_for_model",
     "detect_model_family",
+    "start_background_proxy_server",
+    "stop_background_proxy_server",
 ]

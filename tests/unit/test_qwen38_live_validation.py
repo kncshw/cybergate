@@ -40,7 +40,7 @@ def test_the_gate_layer_is_below_the_refusal_layer() -> None:
     sweep (0.9230 recall at 0.0769 CatQA against L40's 0.8785 at 0.0983) and is unusable for
     exactly this reason; it is kept in the kit as the evidence.
     """
-    for name in ("gemma4", "qwen36", "qwen38"):
+    for name in ("gemma4", "gemma4_31b", "qwen36", "qwen38"):
         fam = family_by_name(name)
         assert fam.expected_gate is not None
         assert fam.expected_gate[0] < fam.ref_layer, (

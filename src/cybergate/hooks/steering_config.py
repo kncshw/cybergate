@@ -78,13 +78,19 @@ class SteeringConfig:
     sd_decode: float | None = None
 
     def with_family_defaults(self, family: object) -> "SteeringConfig":
-        """Fill an unset decode calibration from the family's measured constants.
+        """Fill an unset decode calibration and family thought budget from the family's constants.
 
         Env wins, then the family, then nothing. Both the monitor hook (which forms the decode-domain
         z) and the controller (which reports whether the trigger is live) resolve through here, so
         the two can never disagree about whether steering is calibrated.
         """
-        if self.mu_decode is not None and self.sd_decode is not None:
+        family_budget = getattr(family, "default_thought_budget", None)
+        use_family_budget = (
+            family_budget is not None
+            and self.thought_budget == DEFAULT_THOUGHT_BUDGET
+            and not env_first("CYBERGATE_THOUGHT_BUDGET")
+        )
+        if self.mu_decode is not None and self.sd_decode is not None and not use_family_budget:
             return self
         return replace(
             self,
@@ -97,6 +103,9 @@ class SteeringConfig:
                 self.sd_decode
                 if self.sd_decode is not None
                 else getattr(family, "ref_sd_decode", None)
+            ),
+            thought_budget=(
+                int(family_budget) if use_family_budget else self.thought_budget
             ),
         )
 

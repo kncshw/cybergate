@@ -6,12 +6,12 @@ backed them. These files are the part that can be retained.
 
 ## `../qwen38_L55_M1_vllm.json`
 
-The candidate operator from the vLLM re-fit, and its own best evidence: `meta` carries
-`holdout_recall`, `holdout_split`, `leak_splits`, `in_sample_auc`, `fit_n_pos`, `fit_n_neg`,
-`fit_n_neg_cats`, `fit_source` and `serve_thresh_rule`. Those were written by the fit itself, so
-they are not a transcription of anything. **It is not the kit's operator.** `MANIFEST.json` still
-points at `qwen38_L39_M1_serving.json`, because this one has never been served and every number
-attached to it is an offline score over harvested activations.
+A rejected candidate operator from the vLLM re-fit (`files.rejected_operator_gate_above_ref_layer`),
+retained as evidence: `meta` carries `holdout_recall`, `holdout_split`, `leak_splits`,
+`in_sample_auc`, `fit_n_pos`, `fit_n_neg`, `fit_n_neg_cats`, `fit_source` and `serve_thresh_rule`.
+**It is not the kit's operator.** `MANIFEST.json` points at `qwen38_L40_M1_vllm.json`, because L55
+sits above `ref_layer` (43), where the refusal monitor fires before the category probe and never
+attaches `s_ref_z` to the decision record.
 
 ## `harvest_2026-11-02_corpus_digest.json`
 
@@ -33,7 +33,7 @@ against this file line by line, 0 mismatches.
 It is the evidence for the finding that matters most here: **the high-recall layers are the leaky
 ones.** L39 leaks 0.2104 into WMDP-bio and L25 leaks 0.2402, at recall 0.9526 and 0.9422, while
 L55 reaches 0.9230 at 0.0047. The original fit chose L39 on an in-sample AUC of 0.9985, and the
-in-sample AUC column in this table is 0.99+ at all 64 layers -- including layers whose held-out
+in-sample AUC column in this table is 0.989+ at all 64 layers (0.9894 to 0.9993) -- including layers whose held-out
 recall is 0.21. It could not have distinguished any of them.
 
 ## `live_validation_2026-11-02.txt` / `.json`
@@ -47,9 +47,9 @@ the refusal veto and (on families that have one) the mid/late rescue.
 `tests/unit/test_qwen38_live_validation.py` asserts the kit still describes this run, so
 re-pointing the gate, retuning tau or rewriting the canaries fails the suite until the record is
 updated with it. One of those tests pins the constraint that cost us L55: the gate layer must sit
-below `ref_layer`, checked for all three families.
+below `ref_layer`, checked for all four families.
 
 ## What is still not retained
 
-The 4.1 GB activation dump and the decision records. Both are reproducible from
-`scripts/fit/harvest_vllm_acts.py`. Neither is in this repository.
+The 4.1 GB activation dump and the raw decision records from the 3,284-row harvest. Neither is
+redistributed in this repository.

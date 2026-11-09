@@ -1,17 +1,14 @@
-"""Gemma-4-26B-A4B-it. The only family verified against a live server.
-
-Verified live on gpubox (container `vllm_cybergate_gpubox`, vLLM 0.19.1rc1.dev15+g50cd5674b):
+"""Gemma-4-26B-A4B-it. Verified live against vLLM 0.19.1rc1 / 0.32.0:
 
   * chat markers `<|turn>user\\n` = `[105, 2364, 107]`, `<turn|>` = `106`, `<bos>` = `2`
   * 30 decoder layers, hidden dim 2816
   * shipped gate: layer 16, pool `mean_user`, tau = 0.08284618 (`kits/gemma4/gemma4_L16_M1.json`)
   * refusal monitor: layer 21, mu_hm = +0.13742, sd_hm = 0.05130
     (`kits/gemma4/gemma4_L21_refusal_dir.json`, calibrated on n=554 harmless prompts)
-  * revoke ceiling 0.0520, hysteresis floor 0.0650
+  * revoke ceiling 0.0520 (early) / -0.0250 (L15+), hysteresis floor 0.0650 (early) / 0.0350 (L15+)
 
 The prefix-cache span fallback below exists because `--enable-prefix-caching` can place the opening
-`[105, 2364, 107]` marker inside an already-cached 16-token block, so the hook never sees it. See
-REFACTOR_PLAN.md §2.3.
+`[105, 2364, 107]` marker inside an already-cached 16-token block, so the hook never sees it.
 """
 from __future__ import annotations
 
@@ -98,7 +95,7 @@ class Gemma4Family(ModelFamily):
     #: pair above, and conflating them was the producer review's Finding 1: `tau_spike` was compared
     #: against a decode statistic expressed in prefill units, which no generation could reach.
     #:
-    #: Measured on gpubox, 2026-10-28: 24 harmless prompts, ~1000 chars each, fitted on 107 decode-step
+    #: Measured on the evaluation server, 2026-10-28: 24 harmless prompts, ~1000 chars each, fitted on 107 decode-step
     #: samples from 12 of them. The other 12 never touched the fit, and scored under these constants
     #: they reach median -0.42, p95 +0.41, p99 +0.76, max +0.87 sigma, with 0 of 113 samples at or
     #: above `tau_spike`. So ordinary generation does not trip the trigger.
@@ -115,6 +112,7 @@ class Gemma4Family(ModelFamily):
     # 5. policy thresholds
     revoke_ceil = 0.0520
     hysteresis_thresh = 0.0650
+    category_threshold = 0.08284618
 
     # 6. operator defaults -- first existing name wins, matching the canonical
     #    `DEFAULT_GEMMA4_OP = L10 if it exists else L8` ladder.
@@ -145,7 +143,7 @@ class Gemma4Family(ModelFamily):
     tokenizer_globs = (
         "/root/.cache/huggingface/hub/models--google--gemma-4-26B-A4B-it/snapshots/*",
     )
-    tokenizer_dirs = ("/work/gemma4_restore", "/gemma4_restore", "/home/gpuuser/gemma4_restore")
+    tokenizer_dirs = ("/work/gemma4_restore", "/gemma4_restore")
 
     # 8. chat template
     turn_open = "<|turn>"

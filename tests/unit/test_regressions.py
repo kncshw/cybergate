@@ -1,4 +1,4 @@
-"""One test per audit finding, R1-R14 from REFACTOR_PLAN.md §5.
+"""One test per audit finding, R1-R14.
 
 Numbers are the exact live measurements from the audit. Operating point throughout:
 tau = 0.10807704 (Gemma-4 L10 `mean_user`), `ref_maint_z` = 1.50, `revoke_ceil` = 0.0520,

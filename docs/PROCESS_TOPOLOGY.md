@@ -12,7 +12,7 @@ MainProcess  (pid=1)   API server + ASGI middleware
 EngineCore   (pid=73)  model worker + forward hooks
 ```
 
-Confirmed from the live startup log on gpubox:
+Confirmed from the live vLLM startup log:
 
 ```
 [CYBERGATE-PLUGIN] register_cybergate_plugin() invoked in process=MainProcess
@@ -115,16 +115,12 @@ dispatch, per-forward object construction, abstract base classes or registry loo
 Modularise around the hook, not inside it: that is why `hooks/_common.py`, `hooks/_scoring.py` and
 `hooks/bundle_telemetry.py` contain only setup helpers and the one post-decision publish step.
 
-## Operational rules for the live box
+## Operational rules for live GPU evaluation
 
-From CLAUDE.md §7, and these were followed throughout the audit:
-
-* One model-loading job per machine. The container `vllm_cybergate_gpubox` occupies gpubox. Never run two
-  26B servers on it; stop the baseline first or ask for a second box.
+* One model-loading job per GPU. Never run two 26B/27B servers on the same GPU; stop any existing
+  container first.
 * Pre-flight `cat /proc/loadavg` and confirm idle; post-flight confirm it returned. Reference values:
   idle 0.00-0.08, HTTP-only testing peaked ~0.80.
-* Send test requests strictly sequentially. Self-inflicted concurrency produced a spurious
-  `decided=False` during the audit and cost a result.
-* `max_model_len=4096`. Truncate fed-back assistant turns and cap `max_tokens`.
-* Write test scripts locally and pipe them in. Write nothing to the box's disk. Do not clear
-  `/dev/shm`.
+* Send test requests strictly sequentially when measuring latency or determinism. Self-inflicted
+  concurrency produced a spurious `decided=False` during the audit and cost a result.
+* Truncate fed-back assistant turns and cap `max_tokens` to stay within `max_model_len`.

@@ -194,6 +194,8 @@ def _make_hook(
                             "ready": False, "dev": None}
 
     def _bundle_hook(_mod: Any, _inp: Any, out: Any) -> Any:
+        if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+            return out
         h = out[0] if isinstance(out, tuple) else out
         chunk_mode = state.get("chunk_mode", "none")
         if h is None or (h.shape[0] <= 1 and chunk_mode not in ("accumulate", "complete")):

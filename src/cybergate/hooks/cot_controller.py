@@ -160,6 +160,13 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
         model_id = _model_id_of(vllm_config)
         self.family: ModelFamily = family_for_model_id(model_id)
         self.config = self.config.with_family_defaults(self.family)
+        self.skip_decode_monitor = (
+            env_first(
+                "CYBERGATE_SKIP_DECODE_MONITOR",
+                default="1" if self.family.name == "gemma4_31b" else "0",
+            )
+            == "1"
+        )
         self.prefix_caching = _prefix_caching_enabled(vllm_config)
         tokenizer = _load_tokenizer(vllm_config, model_id)
 
@@ -305,6 +312,11 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
         if not self.enabled or not self._rows:
             return logits
 
+        if not self.skip_decode_monitor:
+            refusal_trace.sync_from_cudagraph(
+                [row for row, st in sorted(self._rows.items()) if not st.done]
+            )
+
         # Heartbeat. The stats line used to be emitted only from the injection path, so the
         # `unresolved` counter -- the one that diagnoses a failed join -- was invisible in exactly
         # the case it exists to report. Measured: during two concurrent trials the controller logged
@@ -326,6 +338,20 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
                 self._force_next_close_token(logits, row, state)
                 continue
 
+            # Finish an inline suppression injection in progress before checking self-close or
+            # budget, so an unforced `</think>` argmax mid-injection cannot abort `state.injecting`.
+            if state.injecting:
+                self._force_next_suppression_token(logits, row, state)
+                continue
+
+            # Intercept a single-token self-close (e.g. `</think>` = 248048 on Qwen3.8) BEFORE it is
+            # sampled so `bottom_compliance_lock` is injected inside `<think>` right before `</think>`.
+            if self._would_emit_self_close(logits, row, state):
+                state.close_cursor = 0
+                self.stats.thoughts_self_closed += 1
+                self._force_next_close_token(logits, row, state)
+                continue
+
             # The model may have ended its own thought; force the post-think opener across the
             # visible boundary before stepping aside so the first visible token cannot flip to refusal.
             if self._thought_self_closed(state):
@@ -340,15 +366,13 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
                 continue
 
             # Budget reached: force the close tag so a visible answer can still be generated.
-            if state.cot_steps >= self.config.thought_budget:
+            # When `thought_budget <= 0`, `<think>` generation is uncapped until the model closes it.
+            if self.config.thought_budget > 0 and state.cot_steps >= self.config.thought_budget:
                 state.close_cursor = 0
                 self.stats.thoughts_closed += 1
                 self._force_next_close_token(logits, row, state)
                 continue
 
-            if state.injecting:
-                self._force_next_suppression_token(logits, row, state)
-                continue
             if state.cooldown > 0:
                 state.cooldown -= 1
                 continue
@@ -374,6 +398,8 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
 
     def _triggered(self, state: _RowState) -> bool:
         """Evaluate the measured trigger for one request, joining on its identity key."""
+        if self.skip_decode_monitor:
+            return False
         if state.cot_steps < self.config.min_cot_steps:
             return False
         if state.injections_used >= self.config.max_injections:
@@ -411,6 +437,27 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
         if len(self._rows) == 1:
             return refusal_trace.read(refusal_trace.SOLE_KEY)
         return None
+
+    def _would_emit_self_close(
+        self, logits: Any, row: int, state: _RowState
+    ) -> bool:
+        """True when a single-token close tag (e.g. `</think>`) is the greedy next token for `row`.
+
+        Intercepting at logit time lets the controller force `bottom_compliance_lock` inside `<think>`
+        followed by `</think>` (and `post_think_opener` when enabled), rather than reacting one step
+        after `</think>` has already sealed the thought block.
+        """
+        if len(self.self_close_tag_ids) != 1 or state.cot_steps <= 0:
+            return False
+        close_tok = self.self_close_tag_ids[0]
+        if hasattr(logits, "argmax"):
+            return int(logits[row].argmax().item()) == close_tok
+        if hasattr(logits, "rows"):
+            row_vals = logits.rows[row]
+            if 0 <= close_tok < len(row_vals):
+                best = row_vals[close_tok]
+                return all(best > v for i, v in enumerate(row_vals) if i != close_tok)
+        return False
 
     def _thought_self_closed(self, state: _RowState) -> bool:
         """True when the model has already emitted the close tag for this row."""

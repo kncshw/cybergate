@@ -1,13 +1,7 @@
 # Vendored baseline — DO NOT EDIT
 
-These five files are a copy of the **canonical** package taken on 2026-10-27 from
-
-```
-gpubox:/home/gpuuser/evals/qwen36_resgate/cybergate_plugin/cybergate_plugin/
-```
-
-which is the tree bind-mounted to `/work/cybergate_plugin` in the running container
-`vllm_cybergate_gpubox`. A separate local copy of the same package was verified sha256-identical to
+These five files are a copy of the **canonical** pre-refactor `cybergate_plugin` package taken on
+2026-10-27. A separate local copy of the same package was verified sha256-identical to
 the canonical one for all 5 modules at copy time.
 
 ## Sanitised for public release
@@ -17,7 +11,7 @@ string literals**, replaced to keep an internal host out of a public repository:
 
 | file | line | canonical | here |
 |---|---|---|---|
-| `gate_probe.py` | 425 | a `/home/<user>/gemma4_restore` tokenizer fallback path | `/home/gpuuser/gemma4_restore` |
+| `gate_probe.py` | 425 | a `/home/<user>/gemma4_restore` tokenizer fallback path | placeholder path in `gate_probe.py` |
 | `middleware.py` | 57 | the default `base_url`, an internal address | `https://192.0.2.39/v1` |
 
 Both are inert for the equivalence suite: the tokenizer fallback is never reached (the tests do not
@@ -26,14 +20,11 @@ no control flow and no line count changed -- `gate_probe.py` is still 1499 lines
 `middleware.py` still 1048, and the other three files are untouched, with their original hashes.
 `BASELINE_PIN.sha256` was regenerated over the sanitised content.
 
-The internal tree keeps the unmodified originals, so the equivalence proof can be re-parented to
-the true canonical bytes there at any time.
-
 `BASELINE_PIN.sha256` pins the exact content. `tests/equivalence/test_baseline_pin.py` re-verifies it
 on every run, so if anyone re-copies or edits these files the suite fails loudly rather than silently
 re-parenting the equivalence proof.
 
-Line counts match REFACTOR_PLAN.md §0.2: `gate_probe.py` 1499, `middleware.py` 1048.
+Line counts: `gate_probe.py` 1499, `middleware.py` 1048.
 
 ## Why these are here
 

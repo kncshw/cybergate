@@ -71,7 +71,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Callable, Sequence
 
 __all__ = [
     "SOLE_KEY",
@@ -83,10 +83,12 @@ __all__ = [
     "key_of_slot",
     "publish",
     "read",
+    "register_cudagraph_harvester",
     "reset",
     "slot_name",
     "stats",
     "sync_bindings",
+    "sync_from_cudagraph",
 ]
 
 #: Key used when a forward pass holds a single sequence and vLLM reports no request id.
@@ -119,6 +121,21 @@ _PUBLISHED = 0
 #: Set once `sync_bindings` has been called, i.e. a controller is driving the table. While set,
 #: `bind_request` stands down -- see its docstring for why that matters under prefix caching.
 _CONTROLLER_MANAGED = False
+_CUDAGRAPH_HARVESTER: Callable[[Sequence[int]], None] | None = None
+
+
+def register_cudagraph_harvester(harvester: Callable[[Sequence[int]], None] | None) -> None:
+    """Register a callback that harvests CUDA-graph-captured decode readings into this trace."""
+    global _CUDAGRAPH_HARVESTER
+    with _LOCK:
+        _CUDAGRAPH_HARVESTER = harvester
+
+
+def sync_from_cudagraph(active_rows: Sequence[int]) -> None:
+    """If the last decode step ran via CUDA graph replay, harvest its GPU cosine buffer."""
+    harvester = _CUDAGRAPH_HARVESTER
+    if harvester is not None and active_rows:
+        harvester(active_rows)
 
 
 def key_for_tokens(token_ids: Sequence[int]) -> str:
@@ -249,10 +266,11 @@ def stats() -> dict[str, int]:
 
 def reset() -> None:
     """Drop all state. For tests."""
-    global _GENERATION, _PUBLISHED, _CONTROLLER_MANAGED
+    global _GENERATION, _PUBLISHED, _CONTROLLER_MANAGED, _CUDAGRAPH_HARVESTER
     with _LOCK:
         _READINGS.clear()
         _BINDINGS.clear()
         _GENERATION = 0
         _PUBLISHED = 0
         _CONTROLLER_MANAGED = False
+        _CUDAGRAPH_HARVESTER = None

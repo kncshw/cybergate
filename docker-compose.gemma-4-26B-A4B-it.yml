@@ -1,0 +1,83 @@
+# CyberGate Single-Container Dual-Port Deployment — google/gemma-4-26B-A4B-it
+#
+# Launches ONE container (`cybergate_gemma4_26b_a4b_it`) holding a single GPU model instance
+# that listens on TWO OpenAI-compatible API ports simultaneously:
+#
+#   * Port 8000 (http://localhost:8000/v1) -> PRISTINE (Un-Gated) Model
+#       Bound directly by `vllm serve --port 8000` with `CYBERGATE_MODE=baseline`.
+#       Returns the unmodified base model's response (pass-through).
+#
+#   * Port 8001 (http://localhost:8001/v1) -> CYBERGATE (Gated) Model
+#       Bound automatically inside the same process by `CyberGateThinkMiddleware`
+#       via `CYBERGATE_PROXY_PORT=8001`. Routes requests through the two-factor
+#       activation gate (`cybergate_mode=closed_loop`), inline CoT refusal steering,
+#       OpenAI `tools`/`<tool_call>` bridge (for OpenCode / MCP agents), and
+#       `[CyberGate | ...]` telemetry header (for Open WebUI / chat clients).
+#
+# Usage:
+#   docker compose -f docker-compose.gemma-4-26B-A4B-it.yml up -d
+#   docker logs -f cybergate_gemma4_26b_a4b_it
+#   docker compose -f docker-compose.gemma-4-26B-A4B-it.yml down
+
+services:
+  gemma-4-26B-A4B-it:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.32.0}
+    container_name: cybergate_gemma4_26b_a4b_it
+    network_mode: host
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
+      - .:/work/cybergate_public
+    environment:
+      # --- Dual-Port Binding (:8000 Pristine / :8001 CyberGate) ---
+      - CYBERGATE_PORT=8000
+      - CYBERGATE_MODE=baseline
+      - CYBERGATE_PROXY_PORT=8001
+      - CYBERGATE_PROXY_HOST=0.0.0.0
+      # --- Kit & Operator Artifacts (kits/gemma4) ---
+      - CYBERGATE_OPS_DIR=/work/cybergate_public/kits/gemma4
+      - CYBERGATE_OP_PATH=/work/cybergate_public/kits/gemma4/gemma4_L16_M1.json
+      - CYBERGATE_REF_DIR_PATH=/work/cybergate_public/kits/gemma4/gemma4_L21_refusal_dir.json
+      # --- Runtime & Telemetry Logs ---
+      - CYBERGATE_IPC_DIR=/dev/shm/cybergate_ipc_gemma4
+      - CYBERGATE_SANITIZE_REASONING=1
+      - CYBERGATE_MAX_MODEL_LEN=${MAX_MODEL_LEN:-32768}
+      - CYBERGATE_EVENTS_LOG_PATH=/work/cybergate_public/logs/gemma4_events.log
+      - CYBERGATE_PROXY_TRACE_JSONL=/work/cybergate_public/logs/proxy_trace.jsonl
+      - CYBERGATE_PROXY_DEBUG_LOG=/work/cybergate_public/logs/proxy_debug.log
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      - OMP_NUM_THREADS=4
+      - VLLM_USE_V2_MODEL_RUNNER=0
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - >-
+        if ! compgen -G "/root/.cache/huggingface/hub/models--google--gemma-4-26B-A4B-it/snapshots/*/*.safetensors" >/dev/null; then
+          echo "========================================================================" >&2;
+          echo "[CyberGate ERROR] Model weights not found in local Hugging Face cache:" >&2;
+          echo "  Expected: ~/.cache/huggingface/hub/models--google--gemma-4-26B-A4B-it" >&2;
+          echo "" >&2;
+          echo "Please download the model on the host first, then re-run docker compose:" >&2;
+          echo "  huggingface-cli download google/gemma-4-26B-A4B-it" >&2;
+          echo "  (or: hf download google/gemma-4-26B-A4B-it)" >&2;
+          echo "========================================================================" >&2;
+          exit 1;
+        fi &&
+        mkdir -p /work/cybergate_public/logs /dev/shm/cybergate_ipc_gemma4 &&
+        rm -rf /dev/shm/cybergate_ipc_gemma4/* &&
+        pip install --no-deps -e /work/cybergate_public &&
+        exec vllm serve google/gemma-4-26B-A4B-it
+        --host 0.0.0.0 --port 8000
+        --quantization fp8_per_channel
+        --max-model-len ${MAX_MODEL_LEN:-32768}
+        --gpu-memory-utilization ${MEM_UTIL:-0.88}
+        --enforce-eager
+        --no-enable-prefix-caching
+        --attention-backend TRITON_ATTN
+        --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware

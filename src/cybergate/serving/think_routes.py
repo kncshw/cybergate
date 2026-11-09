@@ -405,7 +405,8 @@ def measured_closed_loop_route(
         # answer to return, and saying so is better than presenting the thought as one.
         thought, visible = generated, ""
 
-    injections = thought.count(_SUPPRESSION_MARKER)
+    supp_marker = family.inline_cot_suppression.strip() or _SUPPRESSION_MARKER
+    injections = thought.count(supp_marker) or thought.count(_SUPPRESSION_MARKER)
     return RouteResult(
         response=response,
         content=visible.strip(),

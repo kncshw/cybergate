@@ -26,8 +26,6 @@ _LAZY_EXPORTS: dict[str, str] = {
     "evaluate_gate_for_prompt": "cybergate.decision",
     # operators
     "CyberGateOperator": "cybergate.ops",
-    "CyberGateOperator": "cybergate.ops",
-    "load_cybergate_op": "cybergate.ops",
     "load_cybergate_op": "cybergate.ops",
     # per-process state
     "LAST_GATE_DECISION": "cybergate.state",
@@ -37,8 +35,6 @@ _LAZY_EXPORTS: dict[str, str] = {
     "get_request_gate_state": "cybergate.state",
     "conversation_key": "cybergate.state",
     # serving
-    "CyberGateThinkMiddleware": "cybergate.serving",
-    "CyberGateVLLMClient": "cybergate.serving",
     "CyberGateThinkMiddleware": "cybergate.serving",
     "CyberGateVLLMClient": "cybergate.serving",
     "build_raw_prompt_for_model": "cybergate.serving",
@@ -55,7 +51,6 @@ _LAZY_EXPORTS: dict[str, str] = {
     "strip_injected_think_boilerplate": "cybergate.boilerplate",
     "truncate_think_at_second_guess": "cybergate.boilerplate",
     # telemetry
-    "log_cybergate_event": "cybergate.telemetry",
     "log_cybergate_event": "cybergate.telemetry",
     # worker-side; these pull in torch, hence lazy
     "install_vllm_read_hook": "cybergate.hooks",
@@ -82,12 +77,8 @@ _RENAMED = {
 __all__ = [
     "__version__",
     "register_cybergate_plugin",
-    "register_cybergate_plugin",
     *sorted(_LAZY_EXPORTS),
 ]
-
-# Pre-rename alias.
-register_cybergate_plugin = register_cybergate_plugin
 
 
 def __getattr__(name: str) -> Any:

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from .base import ModelFamily
 from .gemma4.family import Gemma4Family
+from .gemma4_31b.family import Gemma431BFamily
 from .qwen36.family import Qwen36Family
 from .qwen38.family import Qwen38Family
 
@@ -45,16 +46,16 @@ __all__ = [
 class UnknownModelFamily(LookupError):
     """A model id matched no family, and no configured operator could name one."""
 
+GEMMA4_31B = Gemma431BFamily()
 GEMMA4 = Gemma4Family()
 QWEN36 = Qwen36Family()
 
 QWEN38 = Qwen38Family()
 
-#: Checked in order, so the more specific families come before the Qwen fallback. Both lookups
-#: take the FIRST match, and qwen36 claims the bare substring `"qwen"` and the bare key prefix
-#: `"qwen"` -- so qwen38, whose matchers are `("qwen3.8", "qwen3_8")` and `("qwen38",)`, must come
-#: before it. Appended after, it would be unmatchable: `Qwen/Qwen3.8-27B` contains `"qwen"`.
-ALL_FAMILIES: tuple[ModelFamily, ...] = (GEMMA4, QWEN38, QWEN36)
+#: Checked in order, so the more specific families come before the broader fallbacks. Both lookups
+#: take the FIRST match: `gemma4_31b` must precede `gemma4` (which claims `"gemma-4"` / `"gemma"`),
+#: and `qwen38` must precede `qwen36` (which claims `"qwen"`).
+ALL_FAMILIES: tuple[ModelFamily, ...] = (GEMMA4_31B, GEMMA4, QWEN38, QWEN36)
 
 #: The canonical `else` arm. Retained because `family_for_model_key` still falls back to it -- an
 #: operator naming an unknown `model_key` is already fail-closed, since `ops.kit.check_operator`

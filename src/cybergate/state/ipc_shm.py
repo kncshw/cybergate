@@ -7,8 +7,8 @@ Records are written to `sha_<key>.json` through a pid+thread-unique temp file an
 a concurrent reader sees either the old record or the new one, never a partial write. That matters
 because the API-server process reads these files while the worker process writes them.
 
-Records never expire; the audit found 310 in place, the oldest hours old. Phase 6 adds a TTL and
-consume-on-read (REFACTOR_PLAN.md §6).
+Records never expire; the audit found 310 in place, the oldest hours old. A future revision may add a TTL and
+consume-on-read.
 """
 from __future__ import annotations
 

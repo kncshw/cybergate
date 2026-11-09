@@ -11,9 +11,7 @@ metrics, one of which copies a marker list verbatim.
 
 **None of that is here.** This repository ships no weight-editing code, no abliteration, no
 `RowNormalization`, and none of those metrics — it edits no weights at all (`K = 0.0`). It shares no
-source file with that package; the `ResGate*` aliases in `src/cybergate_plugin/` are this project's
-own pre-rename API names, kept for backwards compatibility, and the pre-rename plugin was never
-AGPL-licensed.
+source file with that package, and this plugin was never AGPL-licensed.
 
 ## The one component with upstream provenance
 

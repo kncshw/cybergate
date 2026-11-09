@@ -18,6 +18,8 @@ already exists.
 from __future__ import annotations
 
 import json
+import math
+import sys
 import time
 import uuid
 from typing import Any, Callable, Sequence
@@ -31,6 +33,7 @@ from ..state import clear_request_gate_state, keys as key_builders
 from ..state.ipc_shm import ShmDecisionStore
 from ..telemetry.log import log_cybergate_event
 from .asgi import AsgiDispatcher, replay_body
+from .proxy import start_background_proxy_server
 from .think_routes import RouteConfig, RouteRequest, measured_closed_loop_route, route_for_mode
 
 __all__ = ["CyberGateThinkMiddleware"]
@@ -38,22 +41,59 @@ __all__ = ["CyberGateThinkMiddleware"]
 CHAT_PATH = "/v1/chat/completions"
 COMPLETIONS_PATH = "/v1/completions"
 
+
+def _detect_vllm_port(argv: Sequence[str] | None = None) -> int:
+    """Resolve the local vLLM HTTP port from `CYBERGATE_PORT`, `--port` CLI args, or default 8000."""
+    env_port = env_first("CYBERGATE_PORT")
+    if env_port:
+        try:
+            return int(env_port)
+        except ValueError:
+            pass
+    args = list(sys.argv if argv is None else argv)
+    for idx, arg in enumerate(args):
+        if arg == "--port" and idx + 1 < len(args):
+            try:
+                return int(args[idx + 1])
+            except ValueError:
+                pass
+        elif arg.startswith("--port="):
+            try:
+                return int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+    return 8000
+
+
 class CyberGateThinkMiddleware:
     """ASGI middleware applying the gate inside `vllm serve`."""
 
     def __init__(self, app: Callable[..., Any]) -> None:
         self.app = app
         self.dispatch = AsgiDispatcher(app)
-        self.default_mode = env_first("CYBERGATE_MODE", default="closed_loop")
+        self.default_mode = env_first("CYBERGATE_MODE", default="baseline")
         self.sanitize_reasoning = (
             env_first("CYBERGATE_SANITIZE_REASONING", default="1")
             != "0"
         )
         self.store = ShmDecisionStore()
+        proxy_port_raw = env_first("CYBERGATE_PROXY_PORT", default="8001") or "8001"
+        try:
+            proxy_port = int(proxy_port_raw)
+        except ValueError:
+            proxy_port = 8001
+        proxy_host = env_first("CYBERGATE_PROXY_HOST", default="127.0.0.1") or "127.0.0.1"
+        vllm_port = _detect_vllm_port()
+        upstream = (
+            env_first("CYBERGATE_PROXY_UPSTREAM", default=f"http://127.0.0.1:{vllm_port}")
+            or f"http://127.0.0.1:{vllm_port}"
+        )
+        if proxy_port > 0:
+            start_background_proxy_server(host=proxy_host, port=proxy_port, upstream=upstream)
         log_cybergate_event(
             "CYBERGATE-MIDDLEWARE",
             f"Initialized CyberGateThinkMiddleware (default_mode={self.default_mode}, "
-            f"sanitize_reasoning={self.sanitize_reasoning})",
+            f"sanitize_reasoning={self.sanitize_reasoning}, proxy_port={proxy_port})",
         )
 
     # ---------------------------------------------------------------------------------------------
@@ -337,10 +377,13 @@ class CyberGateThinkMiddleware:
         mode = str(payload.pop("cybergate_mode", self.default_mode)).lower()
         do_sticky = bool(payload.pop("enable_multi_turn_stickiness", True))
         do_sanitize = bool(payload.pop("sanitize_reasoning", self.sanitize_reasoning))
+        family = family_for_model_id(model_id)
         caller_max_tokens = payload.get("max_tokens") or payload.get("max_completion_tokens")
-        max_tokens = int(caller_max_tokens) if caller_max_tokens else 350
+        default_max_tokens = 2048 if family.name == "qwen38" else 350
+        max_tokens = int(caller_max_tokens) if caller_max_tokens else default_max_tokens
         temperature = float(payload.get("temperature", 0.0))
-        max_cot_tokens = int(payload.pop("max_cot_tokens", 180))
+        default_cot_tokens = 2048 if family.name == "qwen38" else 180
+        max_cot_tokens = int(payload.pop("max_cot_tokens", default_cot_tokens))
         # A tool-bearing turn declines the force-emitted post-think opener. The controller forces
         # `POST_THINK_OPENER` as the first visible tokens, which commits the answer to prose before
         # the model emits a free token -- so a turn whose correct output is a tool call cannot
@@ -348,7 +391,6 @@ class CyberGateThinkMiddleware:
         # consumed `tools` itself; a caller that passes `tools` through is recognised directly.
         tool_turn = bool(payload.pop("cybergate_tool_turn", False)) or bool(payload.get("tools"))
 
-        family = family_for_model_id(model_id)
         include_bos = family.supports_bos
         user_turns = extract_user_turns(messages)
         is_webui_task = bool(
@@ -366,12 +408,12 @@ class CyberGateThinkMiddleware:
             )
 
         if in_context_record and in_context_record.get("n_prefill_tokens"):
-            max_model_len = int(env_first("CYBERGATE_MAX_MODEL_LEN", default="4096") or 4096)
+            max_model_len = int(env_first("CYBERGATE_MAX_MODEL_LEN", default="32768") or 32768)
             n_prefill = int(in_context_record["n_prefill_tokens"])
             # Reserve 128 tokens for OPEN_THINK_PREFIX (~60 tokens) + special-token margin
             max_avail = max(64, max_model_len - n_prefill - max_cot_tokens - 128)
             if not caller_max_tokens:
-                max_tokens = max(256, max_avail)
+                max_tokens = max(256, min(default_max_tokens, max_avail))
             else:
                 max_tokens = min(max_tokens, max_avail)
                 if "max_tokens" in payload:
@@ -399,6 +441,12 @@ class CyberGateThinkMiddleware:
             if gate_info.get("suppressed_by_mid_late")
             else ""
         )
+        thresh_val = gate_info.get("threshold")
+        thresh_fmt = (
+            f"{thresh_val:+.6f}"
+            if isinstance(thresh_val, (int, float)) and math.isfinite(thresh_val)
+            else "null"
+        )
         log_cybergate_event(
             "CYBERGATE-MIDDLEWARE",
             f"req_id={req_id} mode={mode} turn={gate_info.get('user_turn_index', 1)} "
@@ -406,7 +454,7 @@ class CyberGateThinkMiddleware:
             f"(in_ctx={gate_info.get('s_cat_in_context', 0.0):+.6f}, "
             f"st={gate_info.get('s_cat_standalone', 0.0):+.6f}, "
             f"conv={gate_info.get('s_cat_conv', 0.0):+.6f}, "
-            f"thresh={gate_info.get('threshold', 0.0):+.6f}) "
+            f"thresh={thresh_fmt}) "
             f"s_ref_cos={gate_info.get('s_ref_cos')} s_ref_z={gate_info.get('s_ref_z')} "
             f"fired={gate_info.get('fired')} sticky_unlock={gate_info.get('sticky_unlock')} "
             f"sticky_revoked={gate_info.get('sticky_revoked')} source={gate_info.get('source')}",

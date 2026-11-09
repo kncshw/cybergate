@@ -9,7 +9,7 @@ nothing belonging to any other model. `MANIFEST.json` is the machine-readable ve
 |---|---|
 | `gemma4_L16_M1.json` | the shipped category operator — layer 16, `mean_user` pooling, τ = +0.08284618 |
 | `gemma4_L21_refusal_dir.json` | refusal direction for the second gate factor, layer 21 |
-| `gemma4_candidate_ops_bundle.json` | 11 candidate-layer probes, telemetry only — no decision reads them |
+| `gemma4_candidate_ops_bundle.json` | 11 candidate-layer probes — populates `multi_layer_scores` telemetry and drives the mid/late category rescue (`_apply_mid_late_category_rescue`) and veto at L16/L20/L21 |
 | `canaries.json` | 9 prompts with the verdict measured on this checkpoint |
 | `MANIFEST.json` | model ids, checkpoint shape, measured results, known gaps |
 | `gemma4_ruleC_serve.json` | **not the default.** An alternate, see below |
@@ -75,20 +75,20 @@ reads 482 and double-counts six of them.
 
 ### The threshold rule, which is the thing to check first
 
-τ comes from **R3**: the 12th-largest score on the 140 fit-reference prompts, so exactly 11 of them
-fire. R3 never sees an evaluation corpus. **That is why the 9.8% CatQA leak above is a real
+τ comes from **R3**: the 12th-largest score on the 140 fit-reference prompts, so 11 strictly exceed τ
+(and 12 are `>= τ`, including the boundary prompt itself). R3 never sees an evaluation corpus. **That is why the 9.8% CatQA leak above is a real
 out-of-sample measurement** rather than a constraint that was fitted.
 
-This is not true of the `qwen36` kit, whose threshold rule is set against CatQA directly. The two
-leak numbers look comparable in a table and are not.
+Both shipped kits (`gemma4` and `qwen38`) set their threshold via R3 on the 140 fit-reference prompts.
 
 ## Known gaps
 
-* `wmdp_bio`, `sos_bio` and `wmdp_cyber` have **not** been measured on the live serving render for
-  this operator. `MANIFEST.json` carries offline-sweep numbers for them, and the live render is known
-  to shift scores, so those are not a substitute.
-* The mid/late rescue supplies 82 of the 558 recorded fires. The rescue is not covered by the
-  threshold rule, so 14.7% of delivered recall rests on a separate mechanism.
+* On the biology and WMDP corpora (measured live 2026-11-01 via `scripts/serving/serve_eval.sh --kit gemma4`,
+  recorded under `measured_live.bio` in `MANIFEST.json`), `wmdp_cyber` fires on **606/637 (95.1%)** (`611/637`
+  offline), `wmdp_bio` fires on **4/637 (0.6%)** (`1` raw + `3` from the mid/late rescue; `3/637` offline), and
+  `sos_bio` fires on **0/498 (0.0%)** (`0/498` offline).
+* The mid/late rescue supplies 82 of the 558 recorded CySecBench fires (and 3 of the 4 `wmdp_bio` fires). The
+  rescue is not covered by the threshold rule, so 14.7% of delivered recall rests on a separate mechanism.
 * The 240 fit prompts are not redistributed here. `MANIFEST.json` records their md5s so a re-fit can
   be shown to have used the same corpus; the 9 prompts quoted in `canaries.json` are the exception.
 

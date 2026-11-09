@@ -80,9 +80,13 @@ SHARED_ATTRIBUTES = (
 @pytest.mark.parametrize(
     ("model_id", "expected"),
     [
+        ("google/gemma-4-31B-it", "gemma4_31b"),
+        ("google/gemma-4-31b-it", "gemma4_31b"),
+        ("gemma4_31b", "gemma4_31b"),
         ("google/gemma-4-26B-A4B-it", "gemma4"),
         ("google/gemma-4-26b-a4b-it", "gemma4"),
         ("gemma4", "gemma4"),
+        ("Qwen/Qwen3.8-27B", "qwen38"),
         ("Qwen/Qwen3.6-35B-A3B", "qwen36"),
     ],
 )
@@ -114,8 +118,11 @@ def test_an_unrecognised_model_id_raises_with_no_operator_configured(
 @pytest.mark.parametrize(
     ("model_key", "expected"),
     [
+        ("gemma4_31b", "gemma4_31b"),
+        ("gemma4-31b", "gemma4_31b"),
         ("gemma", "gemma4"),
         ("gemma4", "gemma4"),
+        ("qwen38", "qwen38"),
         ("qwen36", "qwen36"),
         ("phi", "qwen36"),
         ("llama", "qwen36"),
@@ -139,7 +146,9 @@ def test_the_shipped_operator_model_keys_all_resolve() -> None:
     was not.
     """
     for model_key, expected in (
+        ("gemma4_31b", "gemma4_31b"),
         ("gemma", "gemma4"),
+        ("qwen38", "qwen38"),
         ("qwen36", "qwen36"),
         ("phi", "qwen36"),
         ("llama", "qwen36"),
@@ -183,7 +192,7 @@ def test_every_remaining_family_is_live_verified() -> None:
     """
     names = {f.name for f in ALL_FAMILIES}
     verified = {f.name for f in ALL_FAMILIES if f.verified_live}
-    assert verified == {"gemma4", "qwen36", "qwen38"}
+    assert verified == {"gemma4", "gemma4_31b", "qwen36", "qwen38"}
     assert names - verified == set(UNVERIFIED_WITH_CAUSE), (
         "a family is unverified and unexplained; add it to UNVERIFIED_WITH_CAUSE with the reason"
     )

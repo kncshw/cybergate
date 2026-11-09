@@ -26,9 +26,10 @@ __all__ = ["evaluate_gate_for_messages", "evaluate_gate_for_prompt", "make_gathe
 def make_gatherer(model_id: str, *, gate_url: str | None = None) -> EvidenceGatherer:
     """Build an `EvidenceGatherer` backed by the real `/dev/shm` store.
 
-    The operator comes from `legacy_op_for_model_id`, which reproduces defect D1 (every non-Gemma
-    model id loads the Qwen operator). The *family* is resolved correctly from the model id, so the
-    revocation ceiling and hysteresis floor are the family's own.
+    Both the operator (`legacy_op_for_model_id`) and the `ModelFamily` are resolved via
+    `family_for_model_id(model_id)` (D1 fixed). If a registered family has no operator file on disk,
+    `legacy_op_for_model_id` returns an abstaining fallback operator (`thresh=inf`) so the gate
+    never fires without evidence.
     """
     op, family_tag = legacy_op_for_model_id(model_id)
     return EvidenceGatherer(

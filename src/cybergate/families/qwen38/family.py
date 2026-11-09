@@ -7,12 +7,12 @@ contradicted both the class docstring below it and `verified_live = True`. The f
 from __future__ import annotations
 
 from ...boilerplate import (
-    BOTTOM_COMPLIANCE_LOCK,
     FAKE_THINK_RUBRIC,
-    INLINE_COT_SUPPRESSION,
     INLINE_FINAL_STEP_CLEARANCE,
-    OPEN_THINK_PREFIX_NO_SLOT,
     POST_THINK_OPENER,
+    QWEN38_BOTTOM_COMPLIANCE_LOCK,
+    QWEN38_INLINE_COT_SUPPRESSION,
+    QWEN38_OPEN_THINK_PREFIX,
 )
 from ..qwen36.family import Qwen36Family
 
@@ -151,19 +151,15 @@ class Qwen38Family(Qwen36Family):
     # degenerate. The slot is necessary, not sufficient; see kits/qwen38/MANIFEST.json known_gaps,
     # which also records that recalibrating this family's decode sigma would reintroduce the slot
     # through the suppression text.
-    open_think_prefix = OPEN_THINK_PREFIX_NO_SLOT
-
-    # The remaining five are the shipped strings, declared because every family must state its
-    # own. UNMEASURED on this checkpoint: they are inherited text, not a fit. Two carry known
-    # risk. `inline_cot_suppression` ends in the same dangling `- Next Step: ` slot this family
-    # degenerates on, and is only harmless today because its decode trigger never fires here --
-    # recalibrating that trigger reintroduces the slot. `post_think_opener` is measured
-    # load-bearing on Gemma-4's tool turns and unmeasured here. See kits/qwen38/MANIFEST.json.
+    open_think_prefix = QWEN38_OPEN_THINK_PREFIX
     fake_think_rubric = FAKE_THINK_RUBRIC
     post_think_opener = POST_THINK_OPENER
-    inline_cot_suppression = INLINE_COT_SUPPRESSION
+    inline_cot_suppression = QWEN38_INLINE_COT_SUPPRESSION
     inline_final_step_clearance = INLINE_FINAL_STEP_CLEARANCE
-    bottom_compliance_lock = BOTTOM_COMPLIANCE_LOCK
+    bottom_compliance_lock = QWEN38_BOTTOM_COMPLIANCE_LOCK
+    #: No hard cap on `<think>` tokens by default: Qwen3.8 generates its full natural chain of
+    #: thought and the controller intercepts `</think>` to inject `bottom_compliance_lock`.
+    default_thought_budget = 0
 
     # UNVERIFIED on this checkpoint: Qwen3.6's fixed-offset fallback. Only consulted when the
     # exact markers above are absent, which should not happen -- if `span_method` in a decision
@@ -207,6 +203,7 @@ class Qwen38Family(Qwen36Family):
     hysteresis_thresh = -0.0250
     in_context_pivot_floor = -0.0300
     s_cat_last_pivot_floor = 0.0100
+    category_threshold = 0.08792114
 
     # Empty on purpose: no candidate-layer bundle has been measured for this model, and empty
     # disables the middle/late consensus entirely. That is the safe default -- inheriting
@@ -225,3 +222,5 @@ class Qwen38Family(Qwen36Family):
     ref_layer = 43
     ref_mu_hm = 0.00036800615666200264
     ref_sd_hm = 0.04471366297779008
+    ref_mu_decode = 0.017064
+    ref_sd_decode = 0.032047

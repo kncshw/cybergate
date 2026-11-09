@@ -12,7 +12,7 @@ from pathlib import Path
 BASELINE = Path(__file__).resolve().parent / "baseline"
 PIN = BASELINE / "BASELINE_PIN.sha256"
 
-#: REFACTOR_PLAN.md §0.2 states these two line counts for the canonical files.
+#: Expected line counts for the canonical files.
 EXPECTED_LINES = {"gate_probe.py": 1499, "middleware.py": 1048}
 
 

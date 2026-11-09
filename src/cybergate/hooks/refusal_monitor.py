@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..config import env_first
 from ..families import (
     DEFAULT_FAMILY,
     MidLateHits,
@@ -241,16 +242,137 @@ def install_refusal_monitor_hook(
         r_vec = load_cybergate_op(None, model_family=fam.name).c
 
     r_cpu = torch.tensor(r_vec, dtype=torch.float32)
-    state: dict[str, Any] = {"r_dev": None, "step_count": 0}
+    r_unit_cpu = r_cpu / torch.linalg.vector_norm(r_cpu).clamp_min(1e-12)
+    state: dict[str, Any] = {
+        "r_dev": None,
+        "r_unit_dev": None,
+        "cg_cos_buf": None,
+        "cg_step_buf": None,
+        "last_cg_step": 0,
+        "step_count": 0,
+    }
+    try:
+        model_dev = next(model.parameters()).device
+        if getattr(model_dev, "type", None) == "cuda":
+            state["r_dev"] = r_cpu.to(device=model_dev, dtype=torch.float32)
+            state["r_unit_dev"] = r_unit_cpu.to(device=model_dev, dtype=torch.float32)
+            state["cg_cos_buf"] = torch.zeros(64, dtype=torch.float32, device=model_dev)
+            state["cg_step_buf"] = torch.zeros(1, dtype=torch.int64, device=model_dev)
+    except Exception:
+        pass
+
+    skip_decode = (
+        env_first(
+            "CYBERGATE_SKIP_DECODE_MONITOR",
+            default="1" if fam.name == "gemma4_31b" else "0",
+        )
+        == "1"
+    )
+
+    def _harvest_cudagraph_decode(active_rows: Any) -> None:
+        if skip_decode or state["cg_step_buf"] is None or state["cg_cos_buf"] is None:
+            return
+        cg_step = int(state["cg_step_buf"].item())
+        if cg_step <= state["last_cg_step"]:
+            return
+        state["last_cg_step"] = cg_step
+        generation = refusal_trace.begin_pass()
+        sole_sequence = len(active_rows) == 1
+        cos_cpu = state["cg_cos_buf"][: max(active_rows) + 1].detach().cpu().tolist()
+        for row in active_rows:
+            s_cos = float(cos_cpu[row])
+            s_z = (s_cos - use_mu) / use_sd
+            slot = refusal_trace.slot_name(row)
+            bound_key = refusal_trace.key_of_slot(slot)
+            req_state = get_request_gate_state(slot)
+            history = (
+                _rolling_window(bound_key)
+                if bound_key is not None
+                else req_state.setdefault("s_ref_history", [])
+            )
+            history.append((s_cos - mu_dec) / sd_dec if decode_calibrated else s_z)
+            if len(history) > _ROLLING_WINDOW:
+                del history[:-_ROLLING_WINDOW]
+            rolling_z = sum(history) / len(history) if history else s_z
+            req_state["rolling_s_ref_z"] = rolling_z
+            req_state["s_ref_cos"] = s_cos
+            req_state["s_ref_z"] = s_z
+            reading = refusal_trace.RowReading(
+                rolling_s_ref_z=rolling_z,
+                s_ref_z=s_z,
+                seq_len=1,
+                generation=generation,
+                decode_domain=decode_calibrated,
+            )
+            if bound_key is not None:
+                refusal_trace.publish(bound_key, reading)
+            if sole_sequence:
+                refusal_trace.publish(refusal_trace.SOLE_KEY, reading)
+            LAST_GATE_DECISION["rolling_s_ref_z"] = rolling_z
+            LAST_GATE_DECISION["s_ref_cos"] = round(s_cos, 6)
+            LAST_GATE_DECISION["s_ref_z"] = round(s_z, 6)
+            state["step_count"] += 1
+            if state["step_count"] % _DECODE_LOG_EVERY == 0:
+                phase = f"DECODE_STEP_{state['step_count']}"
+                decision_store.put_monitor(
+                    {
+                        "layer": l_ref,
+                        "phase": phase,
+                        "seq_toks": 1,
+                        "s_cos": round(s_cos, 6),
+                        "s_ref_z": round(s_z, 6),
+                        "rolling_s_ref_z": round(rolling_z, 6),
+                        "mu_hm": round(use_mu, 6),
+                        "sd_hm": round(use_sd, 6),
+                        "gpu_dot_us": 0.0,
+                    }
+                )
+                log_cybergate_event(
+                    "CYBERGATE-L21-MONITOR",
+                    f"layer=L{l_ref} phase={phase} row={row} req_id={slot} "
+                    f"key={bound_key or ('sole' if sole_sequence else 'unbound')} "
+                    f"seq_toks=1 s_cos={s_cos:+.5f} "
+                    f"s_ref_z={s_z:+.3f}sigma rolling_s_ref_z={rolling_z:+.3f}sigma "
+                    f"gpu_dot_us=cudagraph",
+                )
+
+    refusal_trace.register_cudagraph_harvester(_harvest_cudagraph_decode)
 
     def _refusal_monitor_impl(_module: Any, _inputs: Any, output: Any) -> Any:
-        t_hook0 = time.perf_counter()
+        if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+            if not skip_decode and state["r_unit_dev"] is not None and state["cg_cos_buf"] is not None:
+                h_cg = output[0] if isinstance(output, tuple) else output
+                if h_cg is not None and h_cg.numel() > 0:
+                    h_cg_2d = h_cg.reshape(-1, h_cg.shape[-1]).float()
+                    if h_cg_2d.shape[-1] == state["r_unit_dev"].numel():
+                        norms = torch.linalg.vector_norm(h_cg_2d, dim=-1).clamp_min(1e-12)
+                        cos_vals = torch.mv(h_cg_2d, state["r_unit_dev"]) / norms
+                        k = min(int(h_cg_2d.shape[0]), 64)
+                        state["cg_cos_buf"][:k].copy_(cos_vals[:k])
+                        state["cg_step_buf"].add_(1)
+            return output
         h = output[0] if isinstance(output, tuple) else output
         if h is None or h.numel() == 0:
             return output
 
+        pending = (
+            shared_hook_state.get("pending_prefill_decisions", {})
+            if shared_hook_state is not None
+            else {}
+        )
+        if skip_decode and (
+            (shared_hook_state is not None and not pending)
+            or (shared_hook_state is None and h.shape[0] <= 1)
+        ):
+            return output
+
+        t_hook0 = time.perf_counter()
         if state["r_dev"] is None or state["r_dev"].device != h.device:
             state["r_dev"] = r_cpu.to(device=h.device, dtype=torch.float32)
+            state["r_unit_dev"] = r_unit_cpu.to(device=h.device, dtype=torch.float32)
+            if h.device.type == "cuda" and state["cg_cos_buf"] is None:
+                state["cg_cos_buf"] = torch.zeros(64, dtype=torch.float32, device=h.device)
+                state["cg_step_buf"] = torch.zeros(1, dtype=torch.int64, device=h.device)
 
         h_2d = h.reshape(-1, h.shape[-1]) if h.ndim == 3 else h
         if h_2d.shape[-1] != state["r_dev"].numel():
@@ -262,12 +384,6 @@ def install_refusal_monitor_hook(
             raw_ids = shared_hook_state.get("last_input_ids")
             if raw_ids is not None and raw_ids.numel() == n_tok:
                 input_ids_1d = raw_ids.reshape(-1).cpu().tolist()
-
-        pending = (
-            shared_hook_state.get("pending_prefill_decisions", {})
-            if shared_hook_state is not None
-            else {}
-        )
 
         # One pass, one generation. The CoT controller only accepts readings tagged with the pass it
         # is sampling, so a row recycled between passes cannot be steered on the previous

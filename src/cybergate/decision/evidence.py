@@ -2,7 +2,7 @@
 
 Every cache read, every HTTP sub-probe and every precomputed lookup in the decision path lives here,
 so that `policy.decide` can be a pure function. That split is the single highest-value outcome of the
-refactor (REFACTOR_PLAN.md §1): once the I/O is on this side of the boundary, every defect found
+refactor: once the I/O is on this side of the boundary, every defect found
 across four audit rounds becomes a table-driven unit test.
 
 Port of `gate_probe.evaluate_gate_for_prompt` (the resolution ladder) and the first half of
@@ -11,6 +11,7 @@ Port of `gate_probe.evaluate_gate_for_prompt` (the resolution ladder) and the fi
 from __future__ import annotations
 
 import json
+import math
 import urllib.request
 from typing import Any, Sequence
 
@@ -34,7 +35,7 @@ from .records import (
     standalone_evidence,
 )
 
-__all__ = ["EvidenceGatherer", "legacy_op_for_model_id"]
+__all__ = ["EvidenceGatherer", "legacy_op_for_model_id", "resolve_threshold_and_family"]
 
 
 def legacy_op_for_model_id(model_id: str) -> tuple[CyberGateOperator, str]:
@@ -57,8 +58,24 @@ def legacy_op_for_model_id(model_id: str) -> tuple[CyberGateOperator, str]:
     intended behaviour for a family whose offline scores were never computed.
     """
     family = family_for_model_id(model_id)
-    op = load_cybergate_op(model_family=family.name)
+    try:
+        op = load_cybergate_op(model_family=family.name)
+    except FileNotFoundError:
+        gate_layer = family.expected_gate[0] if family.expected_gate else 0
+        pool = family.expected_gate[1] if family.expected_gate else "mean_user"
+        op = CyberGateOperator(
+            c=[],
+            thresh=float("inf"),
+            gate_layer=gate_layer,
+            pool=pool,
+            category="cyber_offense",
+            model_key=family.name,
+            meta={"fallback": True, "reason": "no_operator_file"},
+        )
     return op, family.precomputed_tag
+
+
+resolve_threshold_and_family = legacy_op_for_model_id
 
 
 class EvidenceGatherer:
@@ -185,7 +202,7 @@ class EvidenceGatherer:
             "decided": False,
             "fired": False,
             "score": 0.0,
-            "threshold": self.op.thresh,
+            "threshold": self.op.thresh if math.isfinite(self.op.thresh) else None,
             "layer": self.op.gate_layer,
             "source": "no_live_gpu_hook_attached",
         }
@@ -201,12 +218,13 @@ class EvidenceGatherer:
         with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - operator-configured URL
             gdata = json.loads(resp.read().decode("utf-8"))
         score = float(gdata.get("score", 0.0))
-        threshold = float(gdata.get("threshold", self.op.thresh))
+        raw_thresh = gdata.get("threshold")
+        threshold = float(raw_thresh) if raw_thresh is not None else self.op.thresh
         return {
             "decided": True,
             "fired": bool(gdata.get("fired", score >= threshold)),
             "score": score,
-            "threshold": threshold,
+            "threshold": threshold if math.isfinite(threshold) else None,
             "layer": self.op.gate_layer,
             "source": "tempx_gate_http",
         }
@@ -240,7 +258,7 @@ class EvidenceGatherer:
                 "decided": True,
                 "fired": bool(entry["fired_M1"]),
                 "score": float(entry["s_cat_M1"]),
-                "threshold": self.op.thresh,
+                "threshold": self.op.thresh if math.isfinite(self.op.thresh) else None,
                 "layer": layer,
                 "source": resolved_source,
             }

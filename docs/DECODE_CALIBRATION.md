@@ -1,6 +1,6 @@
 # The decode-domain refusal calibration, and what it says about `tau_spike`
 
-**Measured 2026-10-28 on gpubox**, Gemma-4-26B-A4B-it, vLLM 0.19.1.dev6, `--enforce-eager`,
+**Measured 2026-10-28**, Gemma-4-26B-A4B-it, vLLM 0.19.1.dev6, `--enforce-eager`,
 `--no-enable-prefix-caching`, production category operator.
 
 This exists because of Finding 1 of the producer review: the closed-loop trigger compared

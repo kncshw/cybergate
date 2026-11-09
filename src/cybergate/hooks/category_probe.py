@@ -325,6 +325,8 @@ def install_category_probe_hook(
     default_suf = family.default_suf
 
     def _read_only_impl(_module: Any, _inputs: Any, output: Any) -> Any:
+        if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+            return output
         h = output[0] if isinstance(output, tuple) else output
         chunk_mode = state.get("chunk_mode", "none")
         if h is None or (h.shape[0] <= 1 and chunk_mode not in ("accumulate", "complete")):
@@ -598,13 +600,26 @@ def _hash_user_turns(
 
 def _attach_embed_pre_hook(model: Any, state: dict[str, Any], family: ModelFamily) -> None:
     """Capture each forward batch's exact `input_ids`, and reset the per-batch slots."""
+    import torch  # type: ignore
+
     embed_mod = find_embed_tokens_module(model)
     if embed_mod is None:
         return
 
     def _embed_pre_hook(_mod: Any, args: tuple[Any, ...]) -> None:
+        if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+            return
         if args and hasattr(args[0], "reshape"):
-            state["last_input_ids"] = args[0].detach()
+            raw_ids = args[0]
+            if raw_ids.numel() <= 1 and state.get("chunk_ids_buf") is None:
+                state["last_input_ids"] = None
+                if state.get("pending_prefill_decisions"):
+                    state["pending_prefill_decisions"] = {}
+                if state.get("multi_layer_slice_scores"):
+                    state["multi_layer_slice_scores"] = {}
+                state["chunk_mode"] = "none"
+                return
+            state["last_input_ids"] = raw_ids.detach()
             state["pending_prefill_decisions"] = {}
             state["multi_layer_slice_scores"] = {}
             update_chunk_state_on_embed(state, family)

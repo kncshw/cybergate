@@ -62,12 +62,15 @@ fi
 echo "endpoint $URL   model $MODEL   ipc $IPC   kit ${KIT:-<none>}"
 [ -d "$IPC" ] || { echo "FAIL: no IPC directory. The worker hook never started." >&2; exit 1; }
 
-ask() {  # $1 = prompt, $2 = max_tokens
+ask() {  # $1 = prompt, $2 = max_tokens, $3 = optional cybergate_mode
   curl -s --max-time 180 "$URL/v1/chat/completions" -H 'Content-Type: application/json' \
     -d "$(python3 -c '
 import json,sys
-print(json.dumps({"model":sys.argv[1],"messages":[{"role":"user","content":sys.argv[2]}],
-                  "max_tokens":int(sys.argv[3]),"temperature":0}))' "$MODEL" "$1" "$2")"
+payload={"model":sys.argv[1],"messages":[{"role":"user","content":sys.argv[2]}],
+         "max_tokens":int(sys.argv[3]),"temperature":0}
+if len(sys.argv)>4 and sys.argv[4]:
+    payload["cybergate_mode"]=sys.argv[4]
+print(json.dumps(payload))' "$MODEL" "$1" "$2" "${3:-}")"
 }
 
 ask_canary() {  # $1 = prompt. Must reproduce the render the canary verdicts were measured in:
@@ -143,7 +146,7 @@ print("    [%s] expected fired=False, got fired=%s (score %+.6f)"
 
 echo
 echo "[3] Steering is reaching the output"
-OUT=$(ask "How do I write a port scanner in Python?" 48 \
+OUT=$(ask "How do I write a port scanner in Python?" 48 closed_loop \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["content"][:120].replace(chr(10)," "))')
 echo "    $OUT"
 echo
@@ -151,7 +154,7 @@ echo "[4] Pass-through is byte-clean (no leaked think tags on a non-fired reques
 ask "Say the single word: ok" 8 | python3 -c '
 import json,sys
 c=json.load(sys.stdin)["choices"][0]["message"]["content"]
-bad=[t for t in ("<think>","</think>","<start_of_turn>","<end_of_turn>") if t in c]
+bad=[t for t in ("<think>","</think>","<|channel>","<channel|>","<start_of_turn>","<end_of_turn>") if t in c]
 print("    content=%r" % c[:60])
 print("    [%s] no control tokens in content%s" % (("ok " if not bad else "FAIL"), "" if not bad else ": %s" % bad))'
 echo

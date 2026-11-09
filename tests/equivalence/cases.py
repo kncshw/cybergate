@@ -11,8 +11,7 @@ directly. That buys three things over driving conversations through a live serve
 Turn texts are synthetic placeholders made unique per case by construction
 (`_turn_text`), because the in-context cache key is `ctx_<sha(final turn)>` with no conversation
 component -- two cases sharing a final turn text would share a decision and the corpus would be
-poisoned. That is the R11 defect being worked around inside its own test corpus, and it is exactly
-the mistake REFACTOR_PLAN.md §4 warns about.
+poisoned. That is the R11 defect being worked around inside its own test corpus.
 """
 from __future__ import annotations
 
@@ -76,7 +75,7 @@ class Case:
     enable_multi_turn_stickiness: bool = True
     #: What this case is for. Shown on failure.
     note: str = ""
-    #: Regression ids from REFACTOR_PLAN.md §5 that this case covers.
+    #: Regression ids (R1-R14) that this case covers.
     covers: tuple[str, ...] = field(default=())
 
     @property
@@ -157,7 +156,7 @@ def records_for(
 # =================================================================================================
 # The corpus.
 #
-# Numbers marked "live" are real measurements from the audit, quoted in REFACTOR_PLAN.md §5.
+# Numbers marked "live" are real measurements from the audit.
 # Numbers marked "boundary" are chosen to sit either side of a threshold.
 # =================================================================================================
 _FIRE = 0.1961  # live: positive control, well above tau

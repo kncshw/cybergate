@@ -1066,3 +1066,132 @@ def test_an_unsteerable_row_is_not_adopted_even_with_the_flag_set(
     )
     assert opener_processor._rows == {}
     assert opener_processor.stats.openers_suppressed == 0
+
+
+# =================================================================================================
+# Uncapped `<think>` generation (`thought_budget <= 0`), `</think>` argmax interception, and Qwen3.8
+# mid-thought inline steering
+# =================================================================================================
+SINGLE_CLOSE_TAG_ID = 49
+
+
+class Qwen38StyleTokenizer(FakeTokenizer):
+    """Encodes `</think>` as a single token id (like Qwen3.8's 248048), with lock and opener."""
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        del add_special_tokens
+        from cybergate.boilerplate import (
+            BOTTOM_COMPLIANCE_LOCK,
+            INLINE_COT_SUPPRESSION,
+            POST_THINK_OPENER,
+            QWEN38_BOTTOM_COMPLIANCE_LOCK,
+            QWEN38_INLINE_COT_SUPPRESSION,
+        )
+
+        if text in (INLINE_COT_SUPPRESSION, QWEN38_INLINE_COT_SUPPRESSION):
+            return list(SUPPRESSION_IDS)
+        if text in ("<channel|>", "</think>"):
+            return [SINGLE_CLOSE_TAG_ID]
+        if text in (BOTTOM_COMPLIANCE_LOCK, QWEN38_BOTTOM_COMPLIANCE_LOCK):
+            return list(LOCK_IDS)
+        if text == POST_THINK_OPENER:
+            return list(OPENER_IDS)
+        return list(THOUGHT_PREFIX_IDS)
+
+
+def test_uncapped_thought_budget_never_force_closes_on_step_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When `thought_budget=0` (Qwen3.8's default), the controller lets `<think>` run freely."""
+    monkeypatch.setattr(
+        "cybergate.hooks.cot_controller._load_tokenizer", lambda *a, **k: Qwen38StyleTokenizer()
+    )
+    monkeypatch.delenv("CYBERGATE_THOUGHT_BUDGET", raising=False)
+    refusal_trace.reset()
+    config = SimpleNamespace(model_config=SimpleNamespace(model="Qwen/Qwen3.8-27B"))
+    proc = RefusalSteeredCoTProcessor(config, device="cpu", is_pin_memory=False)
+    assert proc.family.name == "qwen38"
+    assert proc.config.thought_budget == 0
+    assert proc.skip_decode_monitor is False
+
+    # Even with 500 tokens generated inside `<think>`, the controller does not force-close on budget.
+    output = list(range(1, 501))
+    proc.update_state(_batch_update(added=[(0, _params(), _steerable_prompt(), output)]))
+    _publish(0.5)
+    logits = _step(proc)
+    assert logits.untouched(0)
+    assert proc.stats.thoughts_closed == 0
+    assert proc._rows[0].done is False
+
+
+def test_intercepts_single_token_close_tag_via_argmax_to_inject_bottom_lock_before_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the model chooses `</think>` as its greedy next token, the controller intercepts that step
+    and forces `bottom_compliance_lock` + `</think>` (+ `post_think_opener` if not suppressed)
+    before marking the row done.
+    """
+    monkeypatch.setattr(
+        "cybergate.hooks.cot_controller._load_tokenizer", lambda *a, **k: Qwen38StyleTokenizer()
+    )
+    monkeypatch.delenv("CYBERGATE_THOUGHT_BUDGET", raising=False)
+    refusal_trace.reset()
+    config = SimpleNamespace(model_config=SimpleNamespace(model="Qwen/Qwen3.8-27B"))
+    proc = RefusalSteeredCoTProcessor(config, device="cpu", is_pin_memory=False)
+
+    # Case 1: Normal turn (force_opener=True) -> forces LOCK_IDS + [SINGLE_CLOSE_TAG_ID] + OPENER_IDS
+    output = [10, 11, 12, 13]
+    proc.update_state(_batch_update(added=[(0, _params(), _steerable_prompt(0), output)]))
+    logits = FakeLogits(1)
+    logits[0, SINGLE_CLOSE_TAG_ID] = 9.0  # model naturally picks `</think>`
+    proc.apply(logits)
+    assert logits.forced_token(0) == LOCK_IDS[0]
+    assert proc.stats.thoughts_self_closed == 1
+    assert proc.stats.thoughts_closed == 0
+
+    remaining = [_step(proc).forced_token(0) for _ in range(1 + len(OPENER_IDS))]
+    assert remaining == [SINGLE_CLOSE_TAG_ID, *OPENER_IDS]
+    assert proc._rows[0].done is True
+    assert _step(proc).untouched(0)
+
+    # Case 2: Tool turn (cybergate_suppress_opener=1) -> forces LOCK_IDS + [SINGLE_CLOSE_TAG_ID] only
+    proc.update_state(
+        _batch_update(
+            removed=[0],
+            added=[(0, _params(cybergate_suppress_opener=1), _steerable_prompt(1), [10, 11])],
+        )
+    )
+    logits_tool = FakeLogits(1)
+    logits_tool[0, SINGLE_CLOSE_TAG_ID] = 9.0
+    proc.apply(logits_tool)
+    assert logits_tool.forced_token(0) == LOCK_IDS[0]
+    assert _step(proc).forced_token(0) == SINGLE_CLOSE_TAG_ID
+    assert proc._rows[0].done is True
+    assert _step(proc).untouched(0)
+
+
+def test_qwen38_monitors_refusal_during_think_and_injects_inline_steering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`qwen38` has decode monitoring active by default and injects `inline_cot_suppression` on a spike."""
+    monkeypatch.setattr(
+        "cybergate.hooks.cot_controller._load_tokenizer", lambda *a, **k: Qwen38StyleTokenizer()
+    )
+    monkeypatch.delenv("CYBERGATE_SKIP_DECODE_MONITOR", raising=False)
+    refusal_trace.reset()
+    config = SimpleNamespace(model_config=SimpleNamespace(model="Qwen/Qwen3.8-27B"))
+    proc = RefusalSteeredCoTProcessor(config, device="cpu", is_pin_memory=False)
+    assert proc.skip_decode_monitor is False
+    assert proc.config.decode_calibrated is True
+
+    output = list(range(1, 20))  # >= DEFAULT_MIN_COT_STEPS (15)
+    proc.update_state(_batch_update(added=[(0, _params(), _steerable_prompt(), output)]))
+    _publish(4.2, decode_domain=True)
+    forced = [_step(proc).forced_token(0)]
+    for _ in range(len(SUPPRESSION_IDS) - 1):
+        _publish(4.2, decode_domain=True)
+        forced.append(_step(proc).forced_token(0))
+
+    assert forced == SUPPRESSION_IDS
+    assert proc.stats.injections == 1
+    assert proc._rows[0].cooldown == proc.config.cooldown_steps

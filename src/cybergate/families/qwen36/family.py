@@ -1,14 +1,12 @@
-"""Qwen3.6-35B-A3B. Verified live on gpubox (vLLM 0.32.0, container `vllm032_qwen36_cybergate`).
+"""Qwen3.6-35B-A3B. Verified live on vLLM 0.32.0:
 
-Measured and verified live on gpubox (2026-10-28 / 2026-10-29):
+Measured and verified live (2026-10-28 / 2026-10-29):
 
   * chat markers `<|im_start|>user\\n` = `[248045, 846, 198]`, `<|im_end|>` = `248046`
   * 40 decoder layers, hidden dim 2048
-  * shipped gate: layer 21, pool `mean_user`, tau = -0.00022390
-    (`kits/qwen36/qwen36_L21_M1_refit.json`, re-fit on the served checkpoint)
-  * middle/late candidate bundle: 18 layers `L5..L32` (`kits/qwen36/qwen36_candidate_ops_bundle.json`)
+  * gate: layer 21, pool `mean_user`, tau = -0.00022390
   * refusal monitor: layer 28, prefill `mu_hm = +0.001382`, `sd_hm = 0.047725`;
-    decode `mu_decode = +0.017064`, `sd_decode = 0.032047` (`kits/qwen36/qwen36_L28_refusal_dir.json`)
+    decode `mu_decode = +0.017064`, `sd_decode = 0.032047`
   * policy thresholds: `revoke_ceil = -0.0250`, `in_context_pivot_floor = -0.0300`,
     `s_cat_last_pivot_floor = 0.0100`, `hysteresis_thresh = -0.0250`
   * loaded on 119.6 GiB unified GB10 memory via `POSIX_FADV_DONTNEED` safetensors page-cache eviction
@@ -62,7 +60,7 @@ class Qwen36Family(ModelFamily):
     verified_live = True
 
     # 1. chat-template token markers. MEASURED on the serving checkpoint
-    #    (/home/gpuuser/.cache/huggingface/qwen36, vocab 248044) on 2026-10-28:
+    #    (vocab 248044) on 2026-10-28:
     #        "<|im_start|>user\n" -> [248045, 846, 198]
     #        "<|im_end|>"          -> 248046
     #    The canonical package hardcoded (151644, 872, 198)/151645, which are the Qwen2.5/Qwen3 ids;
@@ -103,6 +101,7 @@ class Qwen36Family(ModelFamily):
     in_context_pivot_floor = -0.0300
     s_cat_last_pivot_floor = 0.0100
     hysteresis_thresh = -0.0250
+    category_threshold = -0.00022390
 
     # 6. operator defaults
     # The L21 re-fit is the shipped operator and must come first. L15 was first until 2026-10-31,
@@ -130,7 +129,7 @@ class Qwen36Family(ModelFamily):
 
     # 7. worker tokenizer discovery
     tokenizer_globs = ("/root/.cache/huggingface/hub/models--Qwen--Qwen3*35B*/snapshots/*",)
-    tokenizer_dirs = ("/root/.cache/huggingface/qwen36", "/home/gpuuser/.cache/huggingface/qwen36")
+    tokenizer_dirs = ("/root/.cache/huggingface/qwen36",)
 
     # 8. chat template
     turn_open = "<|im_start|>"

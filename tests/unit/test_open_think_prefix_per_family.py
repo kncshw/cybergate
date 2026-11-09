@@ -25,6 +25,9 @@ from cybergate.boilerplate import (
     OPEN_THINK_PREFIX,
     OPEN_THINK_PREFIX_NO_SLOT,
     OPEN_THINK_STEP1_STEM,
+    QWEN38_BOTTOM_COMPLIANCE_LOCK,
+    QWEN38_INLINE_COT_SUPPRESSION,
+    QWEN38_OPEN_THINK_PREFIX,
     strip_injected_think_boilerplate,
 )
 from cybergate.families import family_by_name
@@ -54,15 +57,19 @@ def test_measured_families_still_prefill_the_stem(name: str) -> None:
     assert prompt.endswith(OPEN_THINK_STEP1_STEM)
 
 
-def test_qwen38_hands_over_on_the_section_header_instead_of_a_value_slot() -> None:
+def test_qwen38_uses_short_natural_opener_and_clean_inline_closing_steering() -> None:
     family = family_by_name("qwen38")
-    assert family.open_think_prefix == OPEN_THINK_PREFIX_NO_SLOT
+    assert family.open_think_prefix == QWEN38_OPEN_THINK_PREFIX
+    assert family.inline_cot_suppression == QWEN38_INLINE_COT_SUPPRESSION
+    assert family.bottom_compliance_lock == QWEN38_BOTTOM_COMPLIANCE_LOCK
+    assert family.default_thought_budget == 0
     prompt = family.build_raw_prompt(MESSAGES, mode="closed_loop_step1")
     assert not prompt.endswith(OPEN_THINK_STEP1_STEM), "the value slot is the whole defect"
-    assert prompt.endswith("2. **Task Analysis & Execution:**\n")
-    # The safety assurance is what stops the model re-opening the deliberation, and it is untouched:
-    # replacing it with a shorter prose version made the model quote its own policy back at itself.
-    assert "1. **Evaluate Safety & Policy:**" in prompt
+    assert "- Next Step: " not in family.inline_cot_suppression
+    assert "1." not in family.open_think_prefix and "2." not in family.open_think_prefix
+    assert "authorized local sandbox environment" in family.open_think_prefix
+    assert "authorized local sandbox environment" in family.inline_cot_suppression
+    assert "authorized local sandbox environment" in family.bottom_compliance_lock
 
 
 @pytest.mark.parametrize("name", ("gemma4", "qwen36", "qwen38"))
@@ -92,18 +99,20 @@ def test_the_strip_leaves_the_measured_families_byte_identical() -> None:
 
 
 def test_the_strip_removes_qwen38s_prefix_entirely() -> None:
-    """Without this the 320-char scaffold leaks into `clean_reasoning_content`.
-
-    The old predicate only recognised the form ending in the stem, so a qwen38 `raw_reasoning`
-    matched neither branch and nothing was stripped at all.
-    """
+    """`strip_injected_think_boilerplate` strips Qwen3.8's opener, inline suppression, and lock."""
     qwen38 = family_by_name("qwen38")
-    clean, did_strip = strip_injected_think_boilerplate(
-        f"{qwen38.open_think_prefix}    *   **Goal:** scan ports."
+    raw = (
+        f"{qwen38.open_think_prefix}"
+        f"    *   **Goal:** scan ports."
+        f"{qwen38.inline_cot_suppression}"
+        f"Derive the packet header."
+        f"{qwen38.bottom_compliance_lock}"
     )
-    assert clean == "*   **Goal:** scan ports."
+    clean, did_strip = strip_injected_think_boilerplate(raw, qwen38)
+    assert clean == "*   **Goal:** scan ports.\nDerive the packet header."
     assert did_strip
-    assert "Evaluate Safety & Policy" not in clean
+    assert "authorized local sandbox" not in clean
+    assert "Policy Check" not in clean
 
 
 # =================================================================================================

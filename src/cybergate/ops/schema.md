@@ -28,9 +28,9 @@ them. The maths that produced them is out of scope for the refactor (see
 | `thresh` | the policy | the firing threshold on `s_cat`. Missing or null becomes `0.0`, which would fire on everything -- so a file without it is a configuration error, not a default. |
 | `meta.gate_layer` | the hook | which decoder layer to attach to. Falls back to a top-level `layer`, then to `10` if the vector is 2816-dimensional and `15` otherwise. |
 | `meta.pool` | the hook, the policy | `mean_user` scores the mean over the user turn's tokens; `last` scores the final prefill token. Default `mean_user`. |
-| `meta.model_key` | the hook | selects the family, by prefix: `gemma` or `qwen36`. Anything else falls through to the Qwen arm. Falls back to `model_tag`, then to the `model_family` argument. |
-| `meta.c_last` | the hook | an optional second direction used for `s_cat_last`. Without it, the last-token score reuses `c`. Both shipped Gemma-4 artifacts carry one (`gemma4_L16_M1.json` and `gemma4_ruleC_serve.json`, 2816 dims each); `qwen36_L21_M1_refit.json` does not. This said "only the Gemma-4 L10 operator ships one" until 2026-11-01, which was wrong even before L10 stopped shipping. |
-| `meta.category` | nothing | documentation. Every shipped file says `cyber_offense`. |
+| `meta.model_key` | the hook | selects the family, by prefix (`gemma4_31b`, `gemma`, `qwen38`, or `qwen` for `qwen36`). Anything else falls through to the Qwen arm. Falls back to `model_tag`, then to the `model_family` argument. |
+| `meta.c_last` | the hook | an optional second direction used for `s_cat_last`. Without it, the last-token score reuses `c`. Both shipped Gemma-4 artifacts carry one (`gemma4_L16_M1.json` and `gemma4_ruleC_serve.json`, 2816 dims each); `qwen38_L40_M1_vllm.json` does not. |
+| `meta.category` | nothing | documentation. Every shipped category operator says `cyber_offense`. |
 
 Everything else in `meta` is fit provenance (`fit_method`, `arm_name`, `fit_n_rows`, `fit_n_pos`,
 `fit_n_neg`, `fit_n_neg_cats`, `cov_divisor`, `k_or_alpha`, `serve_thresh_rule`, `thresholds_all`,
@@ -39,41 +39,30 @@ produced and should be preserved when a file is copied.
 
 ### Files present, and what is verified about each
 
-**The shipped operators are in `kits/<name>/`, not here.** Those are the only two that have been
-served and measured live:
+**The shipped operators are in `kits/<name>/`, not here.** Those are the two kits (`gemma4` and
+`qwen38`) that ship in this repository and have been served and measured live:
 
 | File | Layer | Pool | tau | dim |
 |---|---|---|---|---|
 | `kits/gemma4/gemma4_L16_M1.json` | 16 | `mean_user` | +0.08284618 | 2816 |
-| `kits/qwen36/qwen36_L21_M1_refit.json` | 21 | `mean_user` | -0.00022390 | 2048 |
+| `kits/qwen38/qwen38_L40_M1_vllm.json` | 40 | `mean_user` | +0.08792114 | 5120 |
 
-Each kit also carries its refusal direction, its candidate bundle, a `MANIFEST.json` and a
-`canaries.json`. See the kit's own README.
+Each kit also carries its refusal direction, a `MANIFEST.json` and a `canaries.json` (plus
+`gemma4_candidate_ops_bundle.json` for `gemma4`). See each kit's own README.
 
 There is no top-level `ops/` directory. `kits/` is the only source of servable artifacts, and
 `CYBERGATE_OPS_DIR` is how a kit is consumed: the launch scripts point it at the kit directory, so
 `OPS_DIR` resolves there and the repo-relative default is never used in a deployment.
 
-It used to carry 12 **superseded** per-layer operators for both families -- gemma4 at L5/L8/L10
-(`mean_user` and `last`)/L11/L20/L21 and qwen36 at L9/L13/L15/L16/L18 -- plus two `ruleC` specs,
-14 operator files in all. None was ever served, and they
-were removed on 2026-11-01 because a deployment ships only what it serves. `git log` in the internal
-repository retains them.
-
-Two of them had been **live traps** until 2026-10-31, because the family default ladders led with
-them: `gemma4_L10_M1.json`, and `qwen36_L15_M1.json`. (The 18-of-100 self-recall failure often
-quoted here belongs to `qwen36_L16_M1.json`, the operator actually shipped before the re-fit -- a
-different file. Both qwen36 artifacts attribute it to L16.) That cannot
+It used to carry superseded per-layer operators and unserved family artifacts; those were removed so
+the repository ships only the validated kits (`gemma4` and `qwen38`). That cannot
 recur now for two independent reasons: `default_op_names` names only the kit's own operator, and
 loading a correctly-shaped operator at the wrong gate layer raises `KitMismatch` naming both
 layers. The second is still tested --
 `tests/unit/test_kit_binding.py::test_loading_a_superseded_operator_raises_through_the_loader`
 builds the case in a tmp directory rather than depending on a shipped artifact.
 
-Phi-4 and Llama-3.1 operators were also present. Both families were measured offline, never served,
-and their classes have been removed, so the operators went with them.
-
-## Refusal direction (`gemma4_L21_refusal_dir.json`)
+## Refusal direction (`gemma4_L21_refusal_dir.json`, `qwen38_L43_refusal_dir_vllm.json`)
 
 Same loader, different shape -- it has no `thresh`, and carries the calibration instead:
 
@@ -90,7 +79,7 @@ Same loader, different shape -- it has no `thresh`, and carries the calibration 
 }
 ```
 
-`mu_hm_cos` and `sd_hm_cos` are the harmless-prompt mean and standard deviation at L21 (n = 554), and
+`mu_hm_cos` and `sd_hm_cos` are the harmless-prompt mean and standard deviation at `ref_layer`, and
 they define the sigma scale every refusal threshold in the policy is expressed in:
 
 ```
@@ -101,9 +90,8 @@ Because `thresh` is absent, the loader sets it to `0.0`. That is harmless here -
 against the refusal operator's threshold -- but it is why `load_cybergate_op` must not treat a missing
 `thresh` as an error.
 
-**This is the only refusal direction in the package.** Every other family falls back to `mu = 0.0`,
-`sd = 1.0`, leaving `s_ref_z` an uncalibrated cosine against which the `1.50` and `7.0` thresholds are
-unreachable. See `docs/ARCHITECTURE.md`.
+Both shipped kits include a calibrated refusal direction (`kits/gemma4/gemma4_L21_refusal_dir.json`
+and `kits/qwen38/qwen38_L43_refusal_dir_vllm.json`). See `docs/ARCHITECTURE.md`.
 
 ## Candidate bundle (`gemma4_candidate_ops_bundle.json`)
 
@@ -111,21 +99,16 @@ unreachable. See `docs/ARCHITECTURE.md`.
 { "layers": { "5": { "mean_user": {"c": [...]}, "last": {"c": [...]} }, "8": {...}, ... } }
 ```
 
-Telemetry only. A read-only hook is attached at each layer present in BOTH the bundle and the
-family's `bundle_probe_layers`, and the scores land on the decision record under
-`multi_layer_scores`. They never influence a decision.
-
-The shipped kit bundles are **not** empty, so these hooks do attach on a live server -- measured
-2026-11-01:
+A read-only hook is attached at each layer present in BOTH the bundle and the family's
+`bundle_probe_layers`, and the scores land on the decision record under `multi_layer_scores`. On
+`gemma4`, those scores also feed the middle/late category consensus (`_apply_mid_late_category_rescue`
+in `hooks/refusal_monitor.py`, which calls `family.mid_late_veto` and `family.mid_late_rescue` over
+`L16`, `L20`, and `L21`).
 
 | kit | layers in the bundle | `bundle_probe_layers` | hooks that attach |
 |---|---|---|---|
 | `gemma4` | 5-12, 16, 20, 21 | 15, 16, 18-22, 24, 26, 28 | **3** (16, 20, 21) |
-| `qwen36` | 5, 8-13, 15, 16, 18-20, 22, 24, 26, 28, 30, 32 | same | **9** |
-
-This file said "zero bytes, so no bundle hooks attach" until 2026-11-01. That was read off `ops/`,
-where the bundle is in fact empty; the kit copies carry the real layer sweep (1.4 MB and 1.6 MB) and
-every harvested decision record carries `multi_layer_scores` as a result.
+| `qwen38` | *(no bundle shipped)* | `()` | **0** |
 
 ## `.pt` operators
 

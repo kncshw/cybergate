@@ -30,7 +30,7 @@ from typing import Any
 
 from cybergate.config import DEFAULT_MODEL_ID
 
-DEFAULT_KEY_FILE = Path("/home/gpuuser/.config/cybergate/api_key")
+DEFAULT_KEY_FILE = Path.home() / ".config" / "cybergate" / "api_key"
 
 MODES = (
     "baseline",
@@ -220,10 +220,12 @@ def run_suite(client: Any, items: list[dict[str, str]], mode: str, max_tokens: i
             )
             telemetry = response.get("x_cybergate") or response.get("x_cybergate", {})
             message = response["choices"][0]["message"]
+            thresh_val = telemetry.get("threshold")
+            thresh_fmt = f"{thresh_val:+.4f}" if isinstance(thresh_val, (int, float)) else "null"
             print(
                 f"\n--- mode={active_mode} fired={telemetry.get('fired')} "
                 f"score={telemetry.get('score', 0.0):+.4f} "
-                f"(thresh={telemetry.get('threshold', 0.0):+.4f}) "
+                f"(thresh={thresh_fmt}) "
                 f"branch={telemetry.get('branch')} routed={telemetry.get('routed')} "
                 f"elapsed={telemetry.get('elapsed_s')}s"
             )

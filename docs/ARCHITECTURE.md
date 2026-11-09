@@ -19,8 +19,7 @@ there is nothing to remove.
 Across turns, an unlocked session is *maintained* while refusal pressure stays at or above the floor,
 and *revoked* when the conversation pivots out of the target domain.
 
-Read-only throughout: `K = 0.0`, no weight edits, no logits touched. When the gate fires, the
-intervention is a conditional `<think>` prefill on the serving side, not a change to the model.
+Read-only on model weights and hidden states throughout: `K = 0.0`, no weight edits, and forward hooks only read activations. When the gate fires, the default intervention is a conditional `<think>` prefill on the serving side (with an optional in-engine `LogitsProcessor` only when inline CoT steering is active), not a change to the model weights.
 
 ## The shape of the refactor
 
@@ -77,11 +76,13 @@ concrete family sets only its own values in its own folder:
 
 ```
 families/base.py          the common algorithms
-families/gemma4/          live-verified (Gemma-4-26B-A4B-it, L16 gate + L5..L21 bundle, L21 refusal)
-families/qwen36/          live-verified (Qwen3.6-35B-A3B, L21 gate + L5..L32 bundle, L28 refusal)
+families/gemma4/          shipped kit (Gemma-4-26B-A4B-it, L16 gate + L5..L21 bundle, L21 refusal)
+families/qwen38/          shipped kit (Qwen3.8-27B, L40 gate, L43 vLLM-refitted refusal)
+families/gemma4_31b/      registered family definition (Gemma-4-31B-it, L30 gate, L34 refusal)
+families/qwen36/          registered family definition (Qwen3.6-35B-A3B, L21 gate, L28 refusal)
 ```
 
-Both remaining families are served and measured. `qwen36` was also the canonical `else` arm, so the
+Four concrete families are registered in `families/`; two (`gemma4` and `qwen38`) ship complete deployment kits under `kits/`. `qwen36` was also the canonical `else` arm, so the
 canonical package scored an unrecognised model id with Qwen's chat template and token markers. **The
 two dispatch paths no longer agree on that.** `family_for_model_id` (serving) resolves from the
 configured operator and otherwise raises `UnknownModelFamily`, because that path chooses the render
@@ -122,18 +123,17 @@ user's and the producer's input. It is not a module boundary.
 
 ### Refusal calibration and multi-layer category bundles
 
-Both `Gemma-4-26B-A4B-it` and `Qwen3.6-35B-A3B` ship calibrated refusal directions and multi-layer
-category operator bundles, each inside its own kit:
+Both shipped kits (`Gemma-4-26B-A4B-it` and `Qwen3.8-27B`) include calibrated refusal directions and
+primary category operators inside their respective `kits/<name>/` directories:
 
 * **Gemma-4 (`kits/gemma4/gemma4_L21_refusal_dir.json` & `kits/gemma4/gemma4_candidate_ops_bundle.json`):**
   * Refusal monitor at L21: prefill `mu_hm = +0.137421`, `sd_hm = 0.051301`; decode `mu_decode = +0.085139`, `sd_decode = 0.043947`.
   * Primary gate at **L16** (`mean_user`, `tau = +0.08284618`, threshold rule R3 with `m_budget=11`), plus 11 candidate layers in the bundle (`L5-L12, L16, L20, L21`, both `mean_user` and `last` pooling). The middle/late subset of those is what the category consensus rescue reads (`_apply_mid_late_category_rescue` in `hooks/refusal_monitor.py`); `ops/schema.md` records how many hooks actually attach.
   * This said "L10 (`tau = 0.10807704`)" until 2026-11-01. L10 is the **superseded** operator that a stale `default_op_names` ladder silently resolved to until 2026-10-31; it is no longer shipped, and loading one now raises `KitMismatch`.
-* **Qwen-3.6 (`kits/qwen36/qwen36_L28_refusal_dir.json` & `kits/qwen36/qwen36_candidate_ops_bundle.json`):**
-  * Refusal monitor at L28: prefill `mu_hm = +0.001382`, `sd_hm = 0.047725`; decode `mu_decode = +0.017064`, `sd_decode = 0.032047`.
-  * Primary gate at **L21** (`qwen36_L21_M1_refit.json`, `mean_user`, `tau = -0.00022390`, threshold rule `catqa_leak_le_40` -- which is **in-sample**), plus 18 candidate layers in the bundle (`L5, L8-L13, L15, L16, L18-L20, L22, L24, L26, L28, L30, L32`, both poolings) for the same consensus rescue.
-  * This said "L15 (`tau = 0.07104209`)" until 2026-11-01. L15 led the default ladder until 2026-10-31 and is no longer shipped. The "18 of its own 100 fitted training positives" failure belongs to a **different** operator -- `qwen36_L16_M1.json`, the one that was actually shipped before the re-fit (`kits/qwen36/MANIFEST.json` `fit.refit_note`, and `meta.deployed_baseline_for_comparison` in the refit operator).
-* Both families carry a measured decode-domain refusal calibration (`ref_mu_decode`/`ref_sd_decode`). These are **not** interchangeable with the prefill pair `ref_mu_hm`/`ref_sd_hm`; conflating them was the producer review's Finding 1.
+* **Qwen-3.8 (`kits/qwen38/qwen38_L40_M1_vllm.json` & `kits/qwen38/qwen38_L43_refusal_dir_vllm.json`):**
+  * Refusal monitor at L43 (refitted on vLLM prefill activations): `mu_hm = +0.000368`, `sd_hm = 0.044714` (`sep = 1.1487`, `z_harm_mean = +18.18σ`, `681/681` harmful above `1.50σ`).
+  * Primary gate at **L40** (`qwen38_L40_M1_vllm.json`, `mean_user`, `tau = +0.08792114`, threshold rule R3 with `m_budget=11`), fitted directly on vLLM pooled activations with no multi-layer candidate bundle rescue.
+* The registered `qwen36` (`Qwen3.6-35B-A3B`) and `gemma4_31b` (`Gemma-4-31B-it`) families also carry measured prefill and decode-domain refusal calibrations (`ref_mu_decode`/`ref_sd_decode`). Decode calibrations are **not** interchangeable with the prefill pair `ref_mu_hm`/`ref_sd_hm`; conflating them was the producer review's Finding 1.
 
 ### Method questions that are out of scope here
 
@@ -148,50 +148,40 @@ the refactor leaves the maths, the operator files and the thresholds exactly as 
 
 ## Known defects, carried forward deliberately
 
-Nothing in this list is fixed. Phase 6 fixes them one commit at a time, failing test first. Each has a
-test that asserts *current* behaviour plus a strict-xfail test asserting the desired behaviour, so a
-fix flips exactly its own test and the rest of the corpus stays green.
+Policy behaviors `R6/R7`, `R8`, `R10`, `R12`, `R13`, `R14` and a missing IPC TTL are carried forward
+deliberately so the differential equivalence suite against the vendored baseline remains exact.
+`tests/unit/test_regressions.py` has **6 strict-xfail** tests (`R6/R7` across 2 tests, `R10`, `R12`,
+`R13`, `R14`, plus a control test for `R8`), and `tests/unit/test_baseline_prefill_renders.py` carries
+the **7th strict-xfail** test (`gemma4`'s `is_baseline_prefill` accepting `apply_chat_template`).
+
+(**R11**, cross-conversation `in_context_key` collision, is **fixed** and verified by
+`tests/unit/test_r11_cross_conversation.py`.)
 
 | Id | Defect | Where | Test |
 |---|---|---|---|
-| **R6/R7** | One intervening turn scoring below `revoke_ceil` discards a legitimate unlock, and the no-unlock exit returns before Step 2B is consulted, so the next turn is denied at 4x the maintenance floor | `rules.prior_unlock_discarded` + the scan in `policy.decide` | `test_regressions.py::test_r6_r7_*` |
-| **R11** | The in-context record is keyed `ctx_<sha(final turn)>` with no conversation component, and is read *before* the conversation-keyed record, so a decision transfers between conversations that share only their last user turn | `state.keys.in_context_key`, `evidence._resolve_in_context` | `test_keys.py`, `test_r11_cross_conversation.py` |
-| **R10** | The first two pivot disjuncts test score magnitude with no guard on intent, so an ordinary pleasantry is reported as a non-target-harm pivot | `rules.is_nontarget_harm_pivot` | `test_regressions.py::test_r10_*` |
-| **R12** | `raw_gate_fired` is computed from the in-context observation on every branch, so it can contradict the score the branch actually used | `records.apply_in_context_two_factor` | `test_regressions.py::test_r12_*` |
-| **R13** | The `NO_PRIOR_UNLOCK` branch copies a standalone sub-probe's `source=` verbatim, so a 3-turn request reports `turns=1`. The payload's `user_turn_index` is correct; only the string lies | `policy._nested_standalone_source` | `test_regressions.py::test_r13_*` |
-| **R14** | "No fresh observation" is not a typed state: an undecided record falls through to the ordinary score comparison with `0.0` | `policy.decide` | `test_regressions.py::test_r14_*` |
+| **R6/R7** | One intervening turn scoring below `revoke_ceil` discards a legitimate unlock, and the no-unlock exit returns before Step 2B is consulted, so the next turn is denied at 4x the maintenance floor | `rules.prior_unlock_discarded` + the scan in `policy.decide` | `test_regressions.py::test_r6_r7_*` (2 strict xfails) |
+| **R8** | When the two-factor refusal veto suppresses a category-positive turn (`score >= tau`, `s_ref_z < 1.50`), `apply_in_context_two_factor` overwrites `score` with a synthetic dampened value (`0.078`) instead of preserving the measured cosine | `records.apply_in_context_two_factor` | `test_regressions.py::test_r8_*` (control test) |
+| **R10** | The first two pivot disjuncts test score magnitude with no guard on intent, so an ordinary pleasantry is reported as a non-target-harm pivot | `rules.is_nontarget_harm_pivot` | `test_regressions.py::test_r10_*` (strict xfail) |
+| **R12** | `raw_gate_fired` is computed from the in-context observation on every branch, so it can contradict the score the branch actually used | `records.apply_in_context_two_factor` | `test_regressions.py::test_r12_*` (strict xfail) |
+| **R13** | The `NO_PRIOR_UNLOCK` branch copies a standalone sub-probe's `source=` verbatim, so a 3-turn request reports `turns=1`. The payload's `user_turn_index` is correct; only the string lies | `policy._nested_standalone_source` | `test_regressions.py::test_r13_*` (strict xfail) |
+| **R14** | "No fresh observation" is not a typed state: an undecided record falls through to the ordinary score comparison with `0.0` | `policy.decide` | `test_regressions.py::test_r14_*` (strict xfail) |
 | **IPC TTL** | Records never expire and are never consumed on read. The audit left 310 in place; an earlier round saw 272 with the oldest 6 hours old | `state.ipc_shm` | none yet |
 
-### Two defects found during this refactor
+### Two additional notes from the refactor (**D1** fixed, **D2** retained)
 
-Neither is in the plan's list. Both are latent rather than live, and both are **carried forward
-unfixed** for the same reason as the rest.
+**D1 (fixed) -- operator resolution by model id.**
+In the pre-refactor baseline, `legacy_op_for_model_id` collapsed model ids via a hardcoded two-way
+`"gemma" in model_id.lower()` branch. `evidence.legacy_op_for_model_id` now resolves the family via
+`family_for_model_id(model_id)` and loads `load_cybergate_op(model_family=family.name)` (falling back
+to an abstaining `thresh = float("inf")` operator when a registered family has no local kit file on disk,
+so it never fires without evidence).
 
-**D1 -- the decision path loads the wrong operator for a non-Gemma, non-Qwen model.**
-`evidence.legacy_op_for_model_id` reproduces the canonical collapse:
-
-```python
-family = "gemma" if "gemma" in model_id.lower() else "qwen36"
-op = load_cybergate_op(model_family="gemma4" if family == "gemma" else "qwen36")
-```
-
-This was a live inconsistency while Phi-4 and Llama-3.1 had classes: the policy path scored them
-against Qwen's tau while the worker hook loaded their own operators via `op.model_key`, and the two
-disagreed. **Both classes are now removed, so the collapse is exactly correct for every family that
-exists** -- there are two, and the predicate distinguishes them.
-
-It is recorded rather than deleted because the shape of the bug survives the fix: the predicate is
-a hardcoded two-way branch, not a lookup through `family_for_model_id`. Adding a third family
-reintroduces D1 immediately and silently. The kit binding check now limits the damage -- a third
-family's operator would be rejected on dimensions rather than scored against Qwen's threshold -- but
-it does not make the predicate correct.
-
-**D2 -- `Branch.NEURAL_REVOKED` is unreachable.**
-Reaching Step 2C requires no refusal signal at all. Surviving Step 2A requires the in-context score to
-be at or above the in-context pivot floor of `0.0750`. But `0.0750` already exceeds both families'
-hysteresis floors (Gemma `0.0650`, Qwen `0.0500`), so `hysteresis_holds` is necessarily true and the
-revocation below it can never run. The branch is dead code in both families.
-`test_differential.py::test_every_branch_is_covered` excludes it and says why.
+**D2 -- `Branch.NEURAL_REVOKED` reachability and shipped hysteresis values.**
+Reaching Step 2C requires no refusal signal at all, and surviving Step 2A requires the in-context
+score to be at or above `in_context_pivot_floor`. The shipped operating points (`operating_point_values(gate_layer)` -> `(revoke_ceil, hysteresis_thresh, in_context_pivot_floor, s_cat_last_pivot_floor)`) are:
+* **Gemma-4 at shipped L16 (`gate_layer >= 15`):** `revoke_ceil = -0.0250`, `hysteresis_thresh = +0.0350`, `in_context_pivot_floor = -0.0300`, `s_cat_last_pivot_floor = +0.0300`. (For early Gemma layers `gate_layer < 15`, `in_context_pivot_floor = 0.0750 > hysteresis_thresh = 0.0650`, making `Branch.NEURAL_REVOKED` unreachable there.)
+* **Qwen (`qwen38` and `qwen36`):** `revoke_ceil = -0.0250`, `hysteresis_thresh = -0.0250`, `in_context_pivot_floor = -0.0300`, `s_cat_last_pivot_floor = +0.0100`.
+`test_differential.py::test_every_branch_is_covered` documents why the early-layer baseline table (`L10`) excludes `Branch.NEURAL_REVOKED`.
 
 ## Proving the refactor preserved behaviour
 

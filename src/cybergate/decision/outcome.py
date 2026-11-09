@@ -1,6 +1,6 @@
 """`GateDecision`, the `Branch` enum, and the one place a `source=` string is built.
 
-The rule from REFACTOR_PLAN.md §3.1: **the `source=` string is rendered from `branch` + `evidence`,
+The core invariant: **the `source=` string is rendered from `branch` + `evidence`,
 never hand-assembled at the branch site.** That structurally removes three found defects -- the
 mislabelled `single_turn_...` source on a multi-turn request, the `raw_gate_fired` / source-string
 contradiction, and a payload `s_ref_z` disagreeing with the `s_ref_z` printed inside `source=`.
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import math
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
@@ -188,6 +189,13 @@ def render_payload(inputs: "GateInputs", decision: GateDecision) -> dict[str, An
     out["non_target_revoke_ceiling"] = op.revoke_ceil
     out["ref_maint_z_threshold"] = op.ref_maint_z
     out["hysteresis_threshold"] = op.hysteresis_thresh
+    if "threshold" in out:
+        raw_thresh = out["threshold"]
+        out["threshold"] = (
+            raw_thresh
+            if isinstance(raw_thresh, (int, float)) and math.isfinite(raw_thresh)
+            else None
+        )
 
     if latest.raw_gate_fired is not None:
         out["raw_gate_fired"] = latest.raw_gate_fired

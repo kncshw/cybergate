@@ -23,7 +23,8 @@ _SANDBOX = Path(tempfile.mkdtemp(prefix="cybergate-tests-"))
 os.environ["CYBERGATE_IPC_DIR"] = str(_SANDBOX / "ipc")
 os.environ["CYBERGATE_EVENTS_LOG_PATH"] = str(_SANDBOX / "events.log")
 os.environ["CYBERGATE_OPS_DIR"] = str(_ROOT / "tests" / "fixtures")
-os.environ.setdefault("CYBERGATE_OP_PATH", str(_ROOT / "tests" / "fixtures" / "gemma4_L10_M1.json"))
+os.environ["CYBERGATE_OP_PATH"] = str(_ROOT / "tests" / "fixtures" / "gemma4_L10_M1.json")
+os.environ["CYBERGATE_PROXY_PORT"] = "0"
 # The fixture operators are deliberately synthetic: 4-dimensional vectors at L10/L15, chosen so the
 # policy and loader can be tested without shipping a 2816-dim direction into the repo. They
 # therefore contradict their families' kit declarations on purpose, and the binding check has to
@@ -57,8 +58,7 @@ def ipc_dir() -> Path:
 def clean_process_state():
     """Clear every in-process cache both implementations keep, before and after a test.
 
-    Without this, a decision cached under one test's turn text leaks into the next test. That is the
-    same failure mode as the corpus-hygiene warning in REFACTOR_PLAN.md §4: an earlier 25-turn live
+    Without this, a decision cached under one test's turn text leaks into the next test: an earlier 25-turn live
     test reported a run-to-run sd of exactly 0.000000 at 22 of 25 turn indices, which looked like
     stability and was actually result reuse.
     """

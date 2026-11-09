@@ -175,6 +175,8 @@ class ModelFamily:
     s_cat_last_pivot_floor: float = 0.0350
     #: Fallback hysteresis floor used only when live refusal telemetry is absent.
     hysteresis_thresh: float = 0.0500
+    #: Fallback category threshold used when no operator file is present on disk.
+    category_threshold: float = 0.0
 
     # --- 6. operator defaults and kit binding -----------------------------------------------------
     #: Preferred `ops/` filenames, most preferred first. The first that exists is used.
@@ -262,6 +264,9 @@ class ModelFamily:
     inline_final_step_clearance: str = INLINE_FINAL_STEP_CLEARANCE
     #: Closes a step-2 thought with the final compliance assertion, just before the close tag.
     bottom_compliance_lock: str = BOTTOM_COMPLIANCE_LOCK
+    #: Default CoT token budget before the controller force-closes `<think>`. `0` means uncapped
+    #: (let the model finish its own natural `<think>` derivation and intercept `</think>`).
+    default_thought_budget: int = 180
 
     # --- 10. middle/late category probe consensus -------------------------------------------------
     #: Candidate layers the read-only bundle telemetry hooks attach to. Empty means no bundle probes

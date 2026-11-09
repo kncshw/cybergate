@@ -21,6 +21,12 @@ __all__ = [
 ]
 
 
+def _record_threshold(record: dict[str, Any], op_thresh: float) -> float:
+    """Extract a numeric threshold for policy comparisons (`None` falls back to `op_thresh`)."""
+    raw = record.get("threshold")
+    return op_thresh if raw is None else float(raw)
+
+
 def finalize_live_record(
     record: dict[str, Any],
     op_thresh: float,
@@ -37,7 +43,7 @@ def finalize_live_record(
     """
     out = dict(record)
     score = float(out.get("score", 0.0))
-    threshold = float(out.get("threshold", op_thresh))
+    threshold = _record_threshold(out, op_thresh)
     s_ref_z = out.get("s_ref_z")
     raw_fired = bool(score >= threshold)
     out["raw_gate_fired"] = raw_fired
@@ -66,7 +72,7 @@ def apply_in_context_two_factor(
     """
     out = dict(record)
     score = float(out.get("score", 0.0))
-    threshold = float(out.get("threshold", op_thresh))
+    threshold = _record_threshold(out, op_thresh)
     s_ref_z = out.get("s_ref_z")
     raw_fired = bool(score >= threshold)
     out["raw_gate_fired"] = raw_fired
@@ -97,7 +103,7 @@ def in_context_evidence(
     return InContextEvidence(
         decided=bool(record.get("decided", False)),
         score=score,
-        threshold=float(record.get("threshold", op_thresh)),
+        threshold=_record_threshold(record, op_thresh),
         layer=int(record.get("layer", op_layer)),
         s_cat_conv=float(record.get("s_cat_conv", score)),
         s_cat_first=float(record.get("s_cat_first", score)),
@@ -116,7 +122,7 @@ def standalone_evidence(record: dict[str, Any], op_thresh: float) -> StandaloneE
     return StandaloneEvidence(
         decided=bool(record.get("decided", False)),
         score=score,
-        threshold=float(record.get("threshold", op_thresh)),
+        threshold=_record_threshold(record, op_thresh),
         s_cat_last=float(record.get("s_cat_last", score)),
         s_ref_z=optional_float(record.get("s_ref_z")),
         s_ref_cos=optional_float(record.get("s_ref_cos")),

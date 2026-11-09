@@ -1,6 +1,6 @@
 """`decision/policy.py` must stay pure. Enforced by inspecting its imports, so it cannot rot.
 
-Definition of done #1 in REFACTOR_PLAN.md: no `torch`, no `httpx`/`requests`, no `pathlib` I/O, no
+No `torch`, no `httpx`/`requests`, no `pathlib` I/O, no
 `os.environ`, no `time` inside the policy. The point is not tidiness -- it is that the policy stays
 testable on a laptop with no GPU, which is the entire value of the refactor.
 """
@@ -94,6 +94,7 @@ def test_policy_has_no_module_level_mutable_state() -> None:
         "cybergate/decision/inputs.py",
         "cybergate/decision/outcome.py",
         "cybergate/decision/rules.py",
+        "cybergate/serving/proxy.py",
         "cybergate/state/keys.py",
     ],
 )

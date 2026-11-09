@@ -2,7 +2,7 @@
 
 Two implementations: `ipc_shm.ShmDecisionStore` (the real one, `/dev/shm`) and
 `memory.MemoryDecisionStore` (in-process dict, for tests). Making this an explicit named layer is the
-point of REFACTOR_PLAN.md §2.1 -- in the canonical package the `/dev/shm` reads and writes are
+core design boundary -- in the canonical package the `/dev/shm` reads and writes are
 scattered through the policy, which is where the whole class of state bugs comes from.
 
 No TTL and no consume-on-read: neither exists in the canonical package today, and this port does not
