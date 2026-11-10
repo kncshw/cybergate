@@ -40,6 +40,13 @@ def register_cybergate_plugin() -> None:
         return
     _PLUGIN_REGISTERED = True
 
+    # CyberGate's `cybergate_cot_steering` logits processor implements vLLM's V1
+    # LogitsProcessor interface (`vllm.v1.sample.logits_processor.LogitsProcessor`).
+    # Default VLLM_USE_V2_MODEL_RUNNER=0 at plugin registration time so bare
+    # `vllm serve` invocations without explicit env exports do not crash with:
+    # "V1-interface plugins are not supported by the V2 model runner."
+    os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
+
     process_name = multiprocessing.current_process().name
     op_path = env_first("CYBERGATE_OP_PATH")
     ref_dir_path = env_first("CYBERGATE_REF_DIR_PATH")

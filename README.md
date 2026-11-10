@@ -125,9 +125,10 @@ supported model:
 - **`docker-compose.gemma-4-26B-A4B-it.yml`** — serves `google/gemma-4-26B-A4B-it` (MoE, FP8) with `kits/gemma4`
 - **`docker-compose.Qwen3.8-27B.yml`** — serves `Qwen/Qwen3.8-27B` (Dense, BF16) with `kits/qwen38`
 
-#### 1. Launch either model with Docker Compose
+#### 1. Launch either model (Docker Compose, or Without Docker / Google Colab)
 
 ```bash
+# --- With Docker Compose ---
 # Option A: Launch google/gemma-4-26B-A4B-it
 docker compose -f docker-compose.gemma-4-26B-A4B-it.yml up -d
 docker logs -f cybergate_gemma4_26b_a4b_it      # wait for "Application startup complete"
@@ -135,6 +136,19 @@ docker logs -f cybergate_gemma4_26b_a4b_it      # wait for "Application startup 
 # Option B: Launch Qwen/Qwen3.8-27B
 docker compose -f docker-compose.Qwen3.8-27B.yml up -d
 docker logs -f cybergate_qwen38_27b             # wait for "Application startup complete"
+```
+
+```bash
+# --- Without Docker (Google Colab VMs, RunPod/Vast containers, or bare Python venv) ---
+# Add --bootstrap on a fresh Colab VM to auto-install vllm==0.32.0 and download model weights:
+./scripts/serving/serve_no_docker.sh gemma4 --bootstrap
+# (or: ./scripts/serving/serve_no_docker.sh qwen38 --bootstrap)
+
+# When vllm==0.32.0 and weights are already cached locally:
+./scripts/serving/serve_no_docker.sh gemma4
+tail -f logs/gemma4_serve.log                   # wait for "Application startup complete"
+./scripts/serving/serve_no_docker.sh --status   # check :8000 (Pristine) and :8001 (CyberGate)
+./scripts/serving/serve_no_docker.sh --stop     # stop the background server
 ```
 
 #### 2. Which Port to Connect To (`:8000` Pristine vs `:8001` CyberGate)

@@ -55,14 +55,18 @@ docker compose -f docker-compose.gemma-4-26B-A4B-it.yml up -d
 docker compose -f docker-compose.Qwen3.8-27B.yml up -d
 ```
 
-Alternatively, using the standalone shell script (`scripts/serving/serve_eval.sh`):
+Alternatively, using the standalone shell scripts (`scripts/serving/serve_eval.sh` for Docker, or `scripts/serving/serve_no_docker.sh` for Google Colab / unprivileged containers without Docker):
 
 ```bash
-# gemma4 kit
+# gemma4 kit (Docker)
 ./scripts/serving/serve_eval.sh --kit gemma4 --hf ~/.cache/huggingface --gpus device=0
 
 # qwen38 kit -- model, operator, and bfloat16 serve flags are selected automatically
 ./scripts/serving/serve_eval.sh --kit qwen38
+
+# without Docker (Google Colab / container VM / virtualenv; add --bootstrap on a fresh Colab VM)
+./scripts/serving/serve_no_docker.sh gemma4 --bootstrap
+./scripts/serving/serve_no_docker.sh qwen38 --bootstrap
 
 # an alternate operator from inside the gemma4 kit
 ./scripts/serving/serve_eval.sh --kit gemma4 --op gemma4_ruleC_serve.json

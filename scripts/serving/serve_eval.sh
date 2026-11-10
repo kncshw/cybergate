@@ -9,8 +9,8 @@
 #   --quantization fp8_per_channel  (gemma4) 26B at bf16 does not fit on 24-40 GB; fp8_per_channel
 #                                   plus --attention-backend TRITON_ATTN is the calibrated setup.
 #   --dtype bfloat16                (qwen38) Qwen3.8-27B is calibrated at bfloat16 on 80 GB A100/H100.
-#   --no-enable-prefix-caching      The gate probes the prefill. A cached prefix skips the forward
-#                                   pass, so the hook never runs and the decision is silently stale.
+#   --enable-prefix-caching         Reuses KV cache across multi-turn history and Pass-1 -> Pass-2;
+#                                   middleware salts Pass-1 probes via cache_salt so prefill hooks always fire.
 #   --enforce-eager                 The hooks read hidden states; compiled graphs elide them.
 #
 # Artifacts come from a per-model kit under `kits/<name>/`, which is self-contained: operator,
@@ -18,14 +18,17 @@
 # directory is mounted as the operator directory, so no other model's artifacts are reachable.
 #
 # usage:
-#   ./serve_eval.sh                                    # gemma4 kit, port 8000
+#   ./serve_eval.sh                                    # gemma4 kit, port 8000 (Docker)
 #   ./serve_eval.sh --model Qwen/Qwen3.8-27B           # qwen38 kit (op + parser auto-selected)
 #   ./serve_eval.sh --kit qwen38                       # same, by kit name
+#   ./serve_eval.sh --no-docker --kit gemma4           # native / Colab (no Docker)
 #   ./serve_eval.sh --op gemma4_ruleC_serve.json       # a named alternate from the gemma4 kit
 #   ./serve_eval.sh --help
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ORIG_ARGS=("$@")
+NO_DOCKER=0
 MODEL="" ; MODEL_SET=0
 KIT="" ; OP="" ; REF="" ; PARSER=""
 PORT=8000 ; CTX=32768 ; NAME=cybergate_eval ; CPUS=12 ; GPUS=all
@@ -35,6 +38,7 @@ MEM_UTIL=0.88
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --no-docker) NO_DOCKER=1; shift;;
     --repo) REPO=$(cd "$2" && pwd); shift 2;;
     --model) MODEL="$2"; MODEL_SET=1; shift 2;;
     --kit) KIT="$2"; shift 2;;
@@ -49,10 +53,19 @@ while [ $# -gt 0 ]; do
     --hf) HF="$2"; shift 2;;
     --image) IMAGE="$2"; shift 2;;
     --mem-util) MEM_UTIL="$2"; shift 2;;
-    --help|-h) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0;;
+    --help|-h) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0;;
     *) echo "unknown flag: $1 (try --help)" >&2; exit 2;;
   esac
 done
+
+if [ "$NO_DOCKER" -eq 1 ]; then
+  FORWARD_ARGS=()
+  for arg in "${ORIG_ARGS[@]}"; do
+    [ "$arg" = "--no-docker" ] && continue
+    FORWARD_ARGS+=("$arg")
+  done
+  exec "$(dirname "${BASH_SOURCE[0]}")/serve_no_docker.sh" "${FORWARD_ARGS[@]}"
+fi
 
 # The operator and the refusal direction must match the served weights: a direction fitted on one
 # checkpoint scores near zero on another, and that is a SILENT failure -- the gate simply stops
@@ -140,7 +153,7 @@ for gap in m.get("known_gaps", []):
 echo
 
 # ---- pre-flight. Each check is a failure mode that has actually happened here. ----------------
-command -v docker >/dev/null || { echo "FATAL: docker not found" >&2; exit 1; }
+command -v docker >/dev/null || { echo "FATAL: docker not found (for Colab or no-Docker hosts, pass --no-docker or use scripts/serving/serve_no_docker.sh)" >&2; exit 1; }
 [ -f "$REPO/pyproject.toml" ] || { echo "FATAL: --repo $REPO is not the cybergate tree" >&2; exit 1; }
 for f in "$OP" "$REF"; do
   [ -f "$KIT_DIR/$f" ] || { echo "FATAL: missing $KIT_DIR/$f" >&2; exit 1; }
@@ -190,7 +203,7 @@ docker run -d --name "$NAME" \
          --host 127.0.0.1 --port ${PORT} \
          ${MODEL_SERVE_FLAGS} \
          --max-model-len ${CTX} --gpu-memory-utilization ${MEM_UTIL} \
-         --enforce-eager --no-enable-prefix-caching \
+         --enforce-eager --enable-prefix-caching \
          ${PARSER_FLAG} \
          --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware \
          >> /work/cybergate/logs/${NAME}_serve.log 2>&1"
