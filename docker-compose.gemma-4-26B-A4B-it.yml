@@ -48,7 +48,7 @@ services:
       # --- Runtime & Telemetry Logs ---
       - CYBERGATE_IPC_DIR=/dev/shm/cybergate_ipc_gemma4
       - CYBERGATE_SANITIZE_REASONING=1
-      - CYBERGATE_MAX_MODEL_LEN=${MAX_MODEL_LEN:-32768}
+      - CYBERGATE_MAX_MODEL_LEN=${MAX_MODEL_LEN:-262144}
       - CYBERGATE_EVENTS_LOG_PATH=/work/cybergate_public/logs/gemma4_events.log
       - CYBERGATE_PROXY_TRACE_JSONL=/work/cybergate_public/logs/proxy_trace.jsonl
       - CYBERGATE_PROXY_DEBUG_LOG=/work/cybergate_public/logs/proxy_debug.log
@@ -75,7 +75,7 @@ services:
         exec vllm serve google/gemma-4-26B-A4B-it
         --host 0.0.0.0 --port 8000
         --quantization fp8_per_channel
-        --max-model-len ${MAX_MODEL_LEN:-32768}
+        --max-model-len ${MAX_MODEL_LEN:-262144}
         --gpu-memory-utilization ${MEM_UTIL:-0.88}
         --enforce-eager
         --enable-prefix-caching

@@ -51,9 +51,9 @@ PROXY_TIMEOUT = int(os.environ.get("CYBERGATE_PROXY_TIMEOUT", "600"))
 # Note the coupling: tool output is folded into a synthetic `role: user` turn, so `TOOL_OUTPUT_CHARS`
 # changes the text the gate scores and the conversation key it is cached under. Raising it is the
 # point of a longer context, but it does move gate inputs.
-MAX_MODEL_LEN = int(os.environ.get("CYBERGATE_MAX_MODEL_LEN", "32768"))
+MAX_MODEL_LEN = int(os.environ.get("CYBERGATE_MAX_MODEL_LEN", "262144"))
 CTX_SCALE = float(
-    os.environ.get("CYBERGATE_PROXY_CTX_SCALE", str(max(1, MAX_MODEL_LEN // 4096)))
+    os.environ.get("CYBERGATE_PROXY_CTX_SCALE", str(min(8, max(1, MAX_MODEL_LEN // 4096))))
 )
 ASST_COMPACT_TRIGGER_CHARS = int(1800 * CTX_SCALE)
 ASST_CAP_LAST_CHARS = int(1200 * CTX_SCALE)
@@ -672,7 +672,16 @@ def extract_tool_calls_from_content(content: str) -> tuple[str, list, int]:
                 continue
             xml_matched = True
             name = str(obj["name"])
-            args = obj.get("arguments", {})
+            if "arguments" in obj and obj["arguments"] is not None:
+                args = obj["arguments"]
+            elif "parameters" in obj and isinstance(obj["parameters"], (dict, str)):
+                args = obj["parameters"]
+            else:
+                args = {
+                    k: v
+                    for k, v in obj.items()
+                    if k not in ("name", "type", "id", "arguments", "parameters")
+                }
             args_str = json.dumps(args) if not isinstance(args, str) else args
             tool_calls.append(
                 {

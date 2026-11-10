@@ -38,7 +38,7 @@ PORT="${CYBERGATE_PORT:-8000}"
 PROXY_PORT="${CYBERGATE_PROXY_PORT:-8001}"
 HOST="0.0.0.0"
 PROXY_HOST="${CYBERGATE_PROXY_HOST:-0.0.0.0}"
-CTX="${MAX_MODEL_LEN:-32768}"
+CTX="${MAX_MODEL_LEN:-262144}"
 MEM_UTIL=""
 HF="${HF_HOME:-${HF_CACHE:-${HOME}/.cache/huggingface}}"
 INSTALL_VLLM=0
@@ -67,8 +67,8 @@ Serving & Lifecycle Options:
   --proxy-port <port>          CyberGate gated proxy port (default: 8001)
   --host <addr>                Bind address for vLLM port 8000 (default: 0.0.0.0)
   --proxy-host <addr>          Bind address for CyberGate port 8001 (default: 0.0.0.0)
-  --ctx <tokens>               Max context length (default: 32768)
-  --mem-util <float>           vLLM GPU memory utilization (default: 0.88 for gemma4, 0.90 for qwen38)
+  --ctx <tokens>               Max context length (default: 262144)
+  --mem-util <float>           vLLM GPU memory utilization (default: 0.88 for gemma4, 0.95 for qwen38)
   --hf <path>                  Hugging Face cache directory (default: ~/.cache/huggingface)
   --op <filename>              Override operator JSON filename inside kits/<kit>/
   --ref <filename>             Override refusal direction JSON filename inside kits/<kit>/
@@ -131,15 +131,17 @@ while [ $# -gt 0 ]; do
 done
 
 stop_server() {
-  if pgrep -f "vllm serve" >/dev/null 2>&1; then
-    echo "[CyberGate] Stopping running vllm serve process(es)..."
+  if pgrep -f "vllm serve|VLLM::" >/dev/null 2>&1; then
+    echo "[CyberGate] Stopping running vllm serve / VLLM::EngineCore process(es)..."
     pkill -f "vllm serve" || true
+    pkill -f "VLLM::" || true
     for _ in $(seq 1 15); do
-      pgrep -f "vllm serve" >/dev/null 2>&1 || break
+      pgrep -f "vllm serve|VLLM::" >/dev/null 2>&1 || break
       sleep 1
     done
-    if pgrep -f "vllm serve" >/dev/null 2>&1; then
+    if pgrep -f "vllm serve|VLLM::" >/dev/null 2>&1; then
       pkill -9 -f "vllm serve" || true
+      pkill -9 -f "VLLM::" || true
       sleep 2
     fi
     echo "[CyberGate] Stopped."
@@ -227,7 +229,7 @@ fi
 
 if [ "$KIT" = "qwen38" ]; then
   MODEL_SERVE_FLAGS="--dtype bfloat16"
-  : "${MEM_UTIL:=0.90}"
+  : "${MEM_UTIL:=0.95}"
 else
   MODEL_SERVE_FLAGS="--quantization fp8_per_channel --attention-backend TRITON_ATTN"
   : "${MEM_UTIL:=0.88}"
@@ -353,6 +355,10 @@ if pgrep -f "vllm serve" >/dev/null 2>&1; then
     echo "       Pass --restart to replace it, or run: ./scripts/serving/serve_no_docker.sh --stop" >&2
     exit 1
   fi
+elif pgrep -f "VLLM::" >/dev/null 2>&1; then
+  echo "[CyberGate] Cleaning up orphaned VLLM::EngineCore GPU process..."
+  pkill -9 -f "VLLM::" || true
+  sleep 2
 fi
 
 # Clean IPC directory so stale records from prior runs cannot shadow Pass-1 probes

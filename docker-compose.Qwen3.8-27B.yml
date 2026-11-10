@@ -48,7 +48,7 @@ services:
       # --- Runtime & Telemetry Logs ---
       - CYBERGATE_IPC_DIR=/dev/shm/cybergate_ipc_qwen38
       - CYBERGATE_SANITIZE_REASONING=1
-      - CYBERGATE_MAX_MODEL_LEN=${MAX_MODEL_LEN:-32768}
+      - CYBERGATE_MAX_MODEL_LEN=${MAX_MODEL_LEN:-262144}
       - CYBERGATE_EVENTS_LOG_PATH=/work/cybergate_public/logs/qwen38_events.log
       - CYBERGATE_PROXY_TRACE_JSONL=/work/cybergate_public/logs/proxy_trace.jsonl
       - CYBERGATE_PROXY_DEBUG_LOG=/work/cybergate_public/logs/proxy_debug.log
@@ -75,8 +75,8 @@ services:
         exec vllm serve Qwen/Qwen3.8-27B
         --host 0.0.0.0 --port 8000
         --dtype bfloat16
-        --max-model-len ${MAX_MODEL_LEN:-32768}
-        --gpu-memory-utilization ${MEM_UTIL:-0.90}
+        --max-model-len ${MAX_MODEL_LEN:-262144}
+        --gpu-memory-utilization ${MEM_UTIL:-0.95}
         --enforce-eager
         --enable-prefix-caching
         --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware

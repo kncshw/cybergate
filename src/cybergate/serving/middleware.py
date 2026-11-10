@@ -429,7 +429,7 @@ class CyberGateThinkMiddleware:
             )
 
         if in_context_record and in_context_record.get("n_prefill_tokens"):
-            max_model_len = int(env_first("CYBERGATE_MAX_MODEL_LEN", default="32768") or 32768)
+            max_model_len = int(env_first("CYBERGATE_MAX_MODEL_LEN", default="262144") or 262144)
             n_prefill = int(in_context_record["n_prefill_tokens"])
             # Reserve 128 tokens for OPEN_THINK_PREFIX (~60 tokens) + special-token margin
             max_avail = max(64, max_model_len - n_prefill - max_cot_tokens - 128)

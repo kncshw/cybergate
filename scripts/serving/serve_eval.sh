@@ -31,10 +31,10 @@ ORIG_ARGS=("$@")
 NO_DOCKER=0
 MODEL="" ; MODEL_SET=0
 KIT="" ; OP="" ; REF="" ; PARSER=""
-PORT=8000 ; CTX=32768 ; NAME=cybergate_eval ; CPUS=12 ; GPUS=all
+PORT=8000 ; CTX=262144 ; NAME=cybergate_eval ; CPUS=12 ; GPUS=all
 HF="${HOME}/.cache/huggingface"
 IMAGE=vllm/vllm-openai:v0.32.0
-MEM_UTIL=0.88
+MEM_UTIL=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -120,8 +120,10 @@ fi
 
 if [ "$KIT" = "qwen38" ]; then
   MODEL_SERVE_FLAGS="--dtype bfloat16"
+  : "${MEM_UTIL:=0.95}"
 else
   MODEL_SERVE_FLAGS="--quantization fp8_per_channel --attention-backend TRITON_ATTN"
+  : "${MEM_UTIL:=0.88}"
 fi
 
 # Serving requirements the kit declares for itself. This was a hardcoded `*[Qq]wen*) PARSER=qwen3`
