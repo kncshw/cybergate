@@ -10,10 +10,6 @@ if _REPO_SRC.is_dir() and str(_REPO_SRC) not in sys.path:
     sys.path.insert(0, str(_REPO_SRC))
 
 from cybergate.serving.proxy import (  # noqa: E402, F401
-    ASST_CAP_LAST_CHARS,
-    ASST_CAP_PRIOR_CHARS,
-    ASST_COMPACT_TRIGGER_CHARS,
-    CTX_SCALE,
     DEFAULT_GUI_MAX_TOKENS,
     DEFAULT_MAX_TOKENS,
     LISTEN_HOST,
@@ -22,8 +18,6 @@ from cybergate.serving.proxy import (  # noqa: E402, F401
     PROXY_DEBUG_LOG,
     PROXY_TIMEOUT,
     PROXY_TRACE_JSONL,
-    TOOL_OUTPUT_CHARS,
-    TOOL_RECORD_CHARS,
     UPSTREAM,
     ProxyHandler,
     ThreadedHTTPServer,
@@ -33,13 +27,13 @@ from cybergate.serving.proxy import (  # noqa: E402, F401
     _OPENER_PREFIX_RE,
     _PRIOR_THINK_RE,
     _TOOL_CALL_RE,
-    _TOOL_ERROR_RE,
     _filter_duplicate_tool_calls,
     _flatten_content,
     _parse_single_tool_json,
     _sanitize_tool_call_json,
     clean_prior_assistant_messages,
     emit_syslog,
+    estimate_chat_prompt_tokens,
     extract_tool_calls_from_content,
     fmt_gate_score,
     format_cybergate_header,
@@ -49,9 +43,11 @@ from cybergate.serving.proxy import (  # noqa: E402, F401
     main,
     normalize_tools_and_messages,
     prepend_cybergate_header,
+    query_upstream_prompt_tokens,
     repair_thought_and_visible,
     start_background_proxy_server,
     stop_background_proxy_server,
+    strip_cybergate_client_kwargs,
     write_proxy_trace,
 )
 

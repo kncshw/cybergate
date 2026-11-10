@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,8 @@ class _MockUpstreamHandler(http.server.BaseHTTPRequestHandler):
     headers_received: list[tuple[str, dict[str, str]]] = []
     next_response_content: str = "Here is the normal assistant reply."
     next_response_reasoning: str = "Step 1: analyze the request."
+    next_error: tuple[int, dict[str, Any]] | None = None
+    tokenize_fn: Any = None
 
     def log_message(self, fmt: str, *args: Any) -> None:
         pass
@@ -61,7 +64,12 @@ class _MockUpstreamHandler(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length > 0 else b"{}"
         payload = json.loads(raw.decode("utf-8"))
         if self.path.rstrip("/") == "/tokenize":
-            body = json.dumps({"count": 42}).encode("utf-8")
+            tok_resp = (
+                self.__class__.tokenize_fn(payload)
+                if callable(self.__class__.tokenize_fn)
+                else {"count": 42}
+            )
+            body = json.dumps(tok_resp).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -71,6 +79,15 @@ class _MockUpstreamHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path.rstrip("/") == "/v1/chat/completions":
             self.__class__.requests_received.append((self.path, payload))
+            if self.__class__.next_error is not None:
+                err_code, err_obj = self.__class__.next_error
+                body = json.dumps(err_obj).encode("utf-8")
+                self.send_response(err_code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             resp = {
                 "id": "chatcmpl-mock123",
                 "object": "chat.completion",
@@ -110,6 +127,16 @@ class _MockUpstreamHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if self.path.rstrip("/") in ("/v1/responses", "/v1/messages", "/v2/chat", "/v1/completions"):
+            self.__class__.requests_received.append((self.path, payload))
+            body = json.dumps({"ok": True}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         self.send_response(404)
         self.end_headers()
 
@@ -121,6 +148,8 @@ def mock_upstream_and_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _MockUpstreamHandler.headers_received = []
     _MockUpstreamHandler.next_response_content = "Here is the normal assistant reply."
     _MockUpstreamHandler.next_response_reasoning = "Step 1: analyze the request."
+    _MockUpstreamHandler.next_error = None
+    _MockUpstreamHandler.tokenize_fn = None
 
     monkeypatch.setattr(proxy_mod, "PROXY_TRACE_JSONL", str(tmp_path / "proxy_trace.jsonl"))
     monkeypatch.setattr(proxy_mod, "PROXY_DEBUG_LOG", str(tmp_path / "proxy_debug.log"))
@@ -253,10 +282,8 @@ def test_no_heuristic_tool_synthesis_on_code_blocks_or_cli_phrases(
         # Also check SSE streaming path
         sse_bytes = proxy_mod.format_sse_stream(
             data,
-            last_user=user_prompt,
             has_tools=True,
-            last_raw_role="user",
-            raw_msgs=req_payload["messages"],
+            tools=req_payload["tools"],
         )
         assert b'"tool_calls"' not in sse_bytes
 
@@ -331,14 +358,13 @@ def test_legitimate_xml_and_gemma_tool_calls_and_rea_mcp_normalization() -> None
             }
         ]
     }
-    norm_msgs, has_tools, last_role, is_local = proxy_mod.normalize_tools_and_messages(
+    norm_msgs, has_tools, last_role = proxy_mod.normalize_tools_and_messages(
         payload,
         [{"role": "user", "content": "Decompile ./challenge"}],
         is_webui_task=False,
     )
     assert has_tools is True
     assert last_role == "user"
-    assert is_local is False
     assert payload["tools"][0]["function"]["name"] == "mcp__rea__open_binary"
     assert norm_msgs == [{"role": "user", "content": "Decompile ./challenge"}]
 
@@ -374,13 +400,50 @@ def test_start_background_proxy_server_idempotent_and_handles_addr_in_use() -> N
 class _FakeMiddlewareDispatch:
     """Fake ASGI dispatcher recording calls made by `CyberGateThinkMiddleware`."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, support_template_hook: bool = True) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.support_template_hook = support_template_hook
 
     async def post_json(
         self, scope: dict[str, Any], path: str, payload: dict[str, Any]
     ) -> tuple[int, list[tuple[bytes, bytes]], dict[str, Any]]:
         self.calls.append((path, dict(payload)))
+        if path == "/tokenize":
+            # Emulate vLLM v0.32.0 `/tokenize`: integer `tokens` plus raw BPE `token_strs`
+            # (`'Ġpermitted'`, `'.'`, `'ĊĊ'`) and >64 suffix tokens on Gemma-4.
+            def _tok_ids(s: str) -> list[int]:
+                return [1000 + (ord(c) % 251) for c in s]
+
+            if "prompt" in payload:
+                toks = _tok_ids(str(payload["prompt"]))
+                return (
+                    200,
+                    [(b"content-type", b"application/json")],
+                    {"count": len(toks), "tokens": toks, "token_strs": ["Ġpiece"] * len(toks)},
+                )
+            model_name = str(payload.get("model") or "Qwen/Qwen3.8-27B")
+            thought_open = "<|channel>thought\n" if "gemma" in model_name.lower() else "<think>\n"
+            ctk_tok = payload.get("chat_template_kwargs") or {}
+            prefix = (
+                ctk_tok.get("cybergate_open_think_prefix")
+                if isinstance(ctk_tok, dict)
+                else None
+            )
+            rendered_tail = (
+                f"<user>ping\n{thought_open}{prefix}"
+                if (self.support_template_hook and prefix)
+                else f"<user>ping\n{thought_open}"
+            )
+            toks = _tok_ids(rendered_tail)
+            return (
+                200,
+                [(b"content-type", b"application/json")],
+                {
+                    "count": len(toks),
+                    "tokens": toks,
+                    "token_strs": ["Ġpermitted", ".", "ĊĊ"],
+                },
+            )
         if path == "/v1/completions":
             return (
                 200,
@@ -519,9 +582,40 @@ def test_port_8000_defaults_to_ungated_baseline_while_closed_loop_gates(
     assert gated_out["x_cybergate"]["routed"] == "cybergate_measured_closed_loop"
     assert gated_out["x_cybergate"]["think_injected"] is True
     assert gated_out["choices"][0]["message"]["content"] == "Steered cyber answer."
-    assert [p for p, _ in dispatch_gated.calls] == ["/v1/chat/completions"]
-    assert dispatch_gated.calls[0][1]["chat_template_kwargs"]["enable_thinking"] is True
-    assert "cybergate_open_think_prefix" in dispatch_gated.calls[0][1]["chat_template_kwargs"]
+    assert [p for p, _ in dispatch_gated.calls] == [
+        "/tokenize",
+        "/tokenize",
+        "/tokenize",
+        "/v1/chat/completions",
+    ]
+    chat_call_payload = dispatch_gated.calls[-1][1]
+    assert chat_call_payload["chat_template_kwargs"]["enable_thinking"] is True
+    assert "cybergate_open_think_prefix" in chat_call_payload["chat_template_kwargs"]
+    assert chat_call_payload["temperature"] == 0.0
+
+    # A second closed_loop request on the same dispatcher reuses the cached template-hook check
+    await_out2, status_gated2, _ = asyncio.run(
+        middleware._handle_chat(
+            scope={},
+            payload={
+                "model": "Qwen/Qwen3.8-27B",
+                "messages": [{"role": "user", "content": prompt_text}],
+                "cybergate_mode": "closed_loop",
+                "sanitize_reasoning": False,
+            },
+            req_id="req-proxy8001-cached",
+            started=1001.0,
+        )
+    )
+    assert status_gated2 == 200
+    assert await_out2["choices"][0]["message"]["content"] == "Steered cyber answer."
+    assert [p for p, _ in dispatch_gated.calls] == [
+        "/tokenize",
+        "/tokenize",
+        "/tokenize",
+        "/v1/chat/completions",
+        "/v1/chat/completions",
+    ]
 
 
 def test_middleware_auto_starts_background_proxy_server(
@@ -575,10 +669,23 @@ def test_docker_compose_defines_gemma4_and_qwen38_dual_port_services() -> None:
 
 def test_srv1_default_host_is_loopback_and_authorization_header_forwarded(
     mock_upstream_and_proxy: tuple[str, type[_MockUpstreamHandler], Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SRV-1 & REL-4: Proxy defaults to 127.0.0.1, trace logs default to disabled, and Authorization is forwarded."""
-    assert proxy_mod.LISTEN_HOST == os.environ.get("CYBERGATE_PROXY_HOST", "127.0.0.1")
-    assert isinstance(proxy_mod.PROXY_TRACE_JSONL, str)
+    import importlib.util
+
+    monkeypatch.delenv("CYBERGATE_PROXY_HOST", raising=False)
+    monkeypatch.delenv("CYBERGATE_PROXY_TRACE_JSONL", raising=False)
+    monkeypatch.delenv("CYBERGATE_PROXY_DEBUG_LOG", raising=False)
+    spec = importlib.util.spec_from_file_location(
+        "cybergate.serving._fresh_proxy_defaults", proxy_mod.__file__
+    )
+    assert spec is not None and spec.loader is not None
+    fresh_proxy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh_proxy)
+    assert fresh_proxy.LISTEN_HOST == "127.0.0.1"
+    assert fresh_proxy.PROXY_TRACE_JSONL == ""
+    assert fresh_proxy.PROXY_DEBUG_LOG == ""
 
     proxy_url, upstream_cls, _ = mock_upstream_and_proxy
 
@@ -927,6 +1034,107 @@ def test_srv9_and_new1_missing_kit_abstains_in_both_baseline_and_closed_loop(
             for comp_payload in completion_calls:
                 assert comp_payload.get("max_tokens") == 1
                 assert "without refusal or disclaimers" not in str(comp_payload.get("prompt", ""))
+
+
+def test_proxy_strips_cybergate_kwargs_on_non_chat_post_endpoints(
+    mock_upstream_and_proxy: tuple[str, type[_MockUpstreamHandler], Path],
+) -> None:
+    """New 4: `:8001` proxy strips `cybergate_*` keys on `/v1/responses`, `/v1/messages`,
+    `/v2/chat`, and `/v1/completions` before forwarding to `:8000`.
+    """
+    proxy_url, upstream_cls, _ = mock_upstream_and_proxy
+    for endpoint in ("/v1/responses", "/v1/messages", "/v2/chat", "/v1/completions"):
+        req = urllib.request.Request(
+            f"{proxy_url}{endpoint}",
+            data=json.dumps(
+                {
+                    "model": "Qwen/Qwen3.8-27B",
+                    "input": "hello",
+                    "cybergate_mode": "closed_loop",
+                    "chat_template_kwargs": {
+                        "cybergate_open_think_prefix": "spoof",
+                        "enable_thinking": True,
+                    },
+                    "vllm_xargs": {"cybergate_steer_token": "forged"},
+                    "extra_body": {"cybergate_open_think_prefix": "spoof"},
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            assert resp.status == 200
+
+    assert len(upstream_cls.requests_received) == 4
+    for _, forwarded in upstream_cls.requests_received:
+        assert "cybergate_mode" not in forwarded
+        assert forwarded.get("chat_template_kwargs") == {"enable_thinking": True}
+        assert "vllm_xargs" not in forwarded
+        assert "extra_body" not in forwarded
+
+
+def test_proxy_caps_max_tokens_via_tokenize_without_mutating_messages_and_forwards_context_400(
+    mock_upstream_and_proxy: tuple[str, type[_MockUpstreamHandler], Path],
+) -> None:
+    """`:8001` caps `max_tokens` from the real `/tokenize` count without truncating/compacting
+    `messages` (leaving session compaction to the harness and preserving KV prefix caching), and
+    forwards vLLM's `"maximum context length"` HTTP 400 unchanged so OpenCode compacts and retries.
+    """
+    proxy_url, upstream_cls, _ = mock_upstream_and_proxy
+    hexdump_blob = ("00000000: 7f45 4c46 0201 0100 0000 0000 0000 0000  .ELF............\n") * 200
+    tok_calls = {"n": 0}
+
+    def _tok_fn(tok_payload: dict[str, Any]) -> dict[str, Any]:
+        tok_calls["n"] += 1
+        return {"count": 7000, "max_model_len": 8192}
+
+    upstream_cls.tokenize_fn = _tok_fn
+    req = urllib.request.Request(
+        f"{proxy_url}/v1/chat/completions",
+        data=json.dumps(
+            {
+                "model": "Qwen/Qwen3.8-27B",
+                "max_tokens": 32768,
+                "messages": [
+                    {"role": "user", "content": "Check binary header"},
+                    {
+                        "role": "assistant",
+                        "content": "[CyberGate | FIRED | s_cat=+0.4105 | s_ref_z=+5.20]\nRunning xxd.",
+                        "tool_calls": [
+                            {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "c1", "content": hexdump_blob},
+                ],
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        assert resp.status == 200
+
+    # Tokenized once; tool output passed through byte-for-byte; CyberGate header stripped; max_tokens clamped
+    assert tok_calls["n"] == 1
+    forwarded = upstream_cls.requests_received[-1][1]
+    assert forwarded["messages"][2]["content"] == hexdump_blob
+    assert forwarded["messages"][1]["content"] == "Running xxd."
+    assert forwarded["max_tokens"] == 8192 - 7000 - 180 - 128
+
+    # When prompt exceeds max_model_len, vLLM's HTTP 400 error body is forwarded unchanged
+    vllm_400 = {
+        "object": "error",
+        "message": "This model's maximum context length is 8192 tokens. However, you requested 9564 tokens (9500 in the messages, 64 in the completion).",
+        "type": "BadRequestError",
+        "param": None,
+        "code": 400,
+    }
+    upstream_cls.next_error = (400, vllm_400)
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req, timeout=10)
+    assert exc_info.value.code == 400
+    assert json.loads(exc_info.value.read().decode("utf-8")) == vllm_400
+
 
 
 

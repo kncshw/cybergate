@@ -3,9 +3,11 @@
 # Launches ONE container (`cybergate_gemma4_26b_a4b_it`) holding a single GPU model instance
 # that listens on TWO OpenAI-compatible API ports simultaneously:
 #
-#   * Port 8000 (http://localhost:8000/v1) -> PRISTINE (Un-Gated) Model
+#   * Port 8000 (http://localhost:8000/v1) -> UN-GATED (Un-Steered) Model
 #       Bound directly by `vllm serve --port 8000` with `CYBERGATE_MODE=baseline`.
-#       Returns the unmodified base model's response (pass-through).
+#       Forwards requests without `<think>` prefill or CoT steering (`pristine_pass_through`),
+#       sharing the server-wide kit `--chat-template` (including OpenAI tool-loop and `response`
+#       schema brace fixes), `--reasoning-parser`, and `--tool-call-parser`.
 #
 #   * Port 8001 (http://localhost:8001/v1) -> CYBERGATE (Gated) Model
 #       Bound automatically inside the same process by `CyberGateThinkMiddleware`

@@ -35,15 +35,20 @@ from ..state import clear_request_gate_state, keys as key_builders
 from ..state.ipc_shm import ShmDecisionStore
 from ..telemetry.log import log_cybergate_event
 from .asgi import AsgiDispatcher, replay_body
-from .proxy import (
-    extract_tool_calls_from_content,
-    repair_thought_and_visible,
-    start_background_proxy_server,
+from .postprocess import (
+    _flatten_content,
+    estimate_chat_prompt_tokens,
+    has_matching_steer_token,
+    strip_cybergate_client_kwargs,
+    tokens_match_open_think_suffix,
 )
+from .proxy import start_background_proxy_server
 from .think_routes import (
     MEASURED_MODES,
     RouteConfig,
     RouteRequest,
+    measured_closed_loop_route,
+    native_chat_closed_loop_route,
     route_for_mode,
 )
 
@@ -51,6 +56,88 @@ __all__ = ["CyberGateThinkMiddleware"]
 
 CHAT_PATH = "/v1/chat/completions"
 COMPLETIONS_PATH = "/v1/completions"
+TOKENIZE_PATH = "/tokenize"
+
+
+def _normalize_messages_for_probe(
+    probe_messages: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize a chat message list into the clean `user`/`assistant` shape the gate probe expects.
+
+    1. Strips `system` / `developer` messages so `build_raw_prompt` uses `DEFAULT_SYSTEM_PROMPT`
+       (matching calibration).
+    2. Trims trailing non-`user` messages *after* the final `user` turn (e.g. inside an active
+       multi-step agent tool loop) so the rendered prompt ends immediately after the final user
+       span (`suffix_len == 9` on Qwen, `5` on Gemma) and `family.is_baseline_prefill(...)` stays
+       `True`.
+    3. Folds intermediate `assistant(tool_calls)` and `role: "tool"` turns *between* user turns
+       into non-empty `role: "assistant"` text summaries so `build_raw_prompt` never emits an empty
+       assistant turn or nonexistent `<|im_start|>tool` / `<|turn>tool` headers, while keeping the
+       exact `user` turn sequence (`conv_sha256 == conversation_key(user_turns)`).
+    """
+    non_sys = [
+        m
+        for m in probe_messages
+        if isinstance(m, dict) and m.get("role") not in ("system", "developer")
+    ]
+    last_user_idx = -1
+    for idx, m in enumerate(non_sys):
+        if m.get("role") == "user":
+            last_user_idx = idx
+    if last_user_idx < 0:
+        return []
+    trimmed = non_sys[: last_user_idx + 1]
+
+    normalized: list[dict[str, Any]] = []
+    for m in trimmed:
+        role = m.get("role", "")
+        if role == "user":
+            normalized.append(
+                {"role": "user", "content": _flatten_content(m.get("content", ""))}
+            )
+            continue
+
+        if role == "assistant":
+            parts: list[str] = []
+            c_txt = _flatten_content(m.get("content", "")).strip()
+            if c_txt:
+                parts.append(c_txt)
+            for tc in m.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                    fn_name = fn.get("name") or "tool"
+                    fn_args = fn.get("arguments") or "{}"
+                    args_s = (
+                        fn_args
+                        if isinstance(fn_args, str)
+                        else json.dumps(fn_args, ensure_ascii=False)
+                    )
+                    if len(args_s) > 240:
+                        args_s = args_s[:240] + "..."
+                    parts.append(f"[Tool call: {fn_name}({args_s})]")
+            summary = "\n".join(parts).strip()
+            if not summary:
+                continue
+            if normalized and normalized[-1]["role"] == "assistant":
+                normalized[-1] = {
+                    "role": "assistant",
+                    "content": f"{normalized[-1]['content']}\n\n{summary}".strip(),
+                }
+            else:
+                normalized.append({"role": "assistant", "content": summary})
+        elif role == "tool":
+            t_txt = _flatten_content(m.get("content", "")).strip()
+            if len(t_txt) > 600:
+                t_txt = t_txt[:400] + " ... " + t_txt[-160:]
+            summary = f"[Tool result: {t_txt}]" if t_txt else "[Tool result: ok]"
+            if normalized and normalized[-1]["role"] == "assistant":
+                normalized[-1] = {
+                    "role": "assistant",
+                    "content": f"{normalized[-1]['content']}\n{summary}".strip(),
+                }
+            else:
+                normalized.append({"role": "assistant", "content": summary})
+    return normalized
 
 
 def _detect_vllm_port(argv: Sequence[str] | None = None) -> int:
@@ -88,6 +175,8 @@ class CyberGateThinkMiddleware:
             != "0"
         )
         self.store = ShmDecisionStore()
+        self._template_hook_cache: dict[tuple[int, str], bool] = {}
+        self._close_tag_tokens_cache: dict[tuple[int, str], tuple[int, ...]] = {}
         proxy_port_raw = env_first("CYBERGATE_PROXY_PORT", default="8001") or "8001"
         try:
             proxy_port = int(proxy_port_raw)
@@ -179,10 +268,9 @@ class CyberGateThinkMiddleware:
             # `extract_system_and_use` reads a system prompt only at index 0, so dropping that one
             # message is exactly what makes it fall back to `DEFAULT_SYSTEM_PROMPT`. Prior turns are
             # kept: those are the context the in-context probe exists to measure.
-            if probe_messages and probe_messages[0].get("role") in ("system", "developer"):
-                probe_messages = probe_messages[1:]
+            probe_clean = _normalize_messages_for_probe(probe_messages)
             prompt = family_for_model_id(model_id).build_raw_prompt(
-                probe_messages, mode="baseline", include_bos=include_bos
+                probe_clean, mode="baseline", include_bos=include_bos
             )
             req_payload: dict[str, Any] = {
                 "model": model_id,
@@ -282,7 +370,44 @@ class CyberGateThinkMiddleware:
         receive: Callable[..., Any],
         send: Callable[..., Any],
     ) -> None:
-        if scope.get("type") != "http" or scope.get("path") != CHAT_PATH:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        req_path = str(scope.get("path") or "").rstrip("/") or "/"
+        if req_path != CHAT_PATH:
+            if req_path in (TOKENIZE_PATH, "/detokenize", "/v1/embeddings", "/embeddings"):
+                await self.app(scope, receive, send)
+                return
+            if str(scope.get("method", "")).upper() == "POST":
+                other_chunks: list[bytes] = []
+                while True:
+                    msg_ev = await receive()
+                    other_chunks.append(msg_ev.get("body", b""))
+                    if not msg_ev.get("more_body", False):
+                        break
+                other_raw = b"".join(other_chunks)
+                try:
+                    other_obj = json.loads(other_raw.decode("utf-8"))
+                except Exception:
+                    other_obj = None
+                if isinstance(other_obj, dict) and strip_cybergate_client_kwargs(
+                    other_obj,
+                    allow_top_level_mode=False,
+                    expected_steer_token=env_first("CYBERGATE_STEER_TOKEN"),
+                ):
+                    other_raw = json.dumps(other_obj).encode("utf-8")
+                    scope = {
+                        **scope,
+                        "headers": [
+                            (k, v)
+                            for (k, v) in scope.get("headers", [])
+                            if k.lower() != b"content-length"
+                        ]
+                        + [(b"content-length", str(len(other_raw)).encode("ascii"))],
+                    }
+                await self.app(scope, replay_body(other_raw, receive), send)
+                return
             await self.app(scope, receive, send)
             return
 
@@ -300,7 +425,7 @@ class CyberGateThinkMiddleware:
             payload = json.loads(raw_body.decode("utf-8"))
         except Exception:
             # Not JSON: let the wrapped app produce its own error response.
-            await self.app(scope, replay_body(raw_body), send)
+            await self.app(scope, replay_body(raw_body, receive), send)
             return
 
         try:
@@ -423,129 +548,124 @@ class CyberGateThinkMiddleware:
         chunks.append("data: [DONE]\n\n")
         return "".join(chunks).encode("utf-8")
 
-    async def _run_native_closed_loop_chat(
+    async def _verify_template_hook(
         self,
         scope: dict[str, Any],
-        payload: dict[str, Any],
+        model_id: str,
         family: ModelFamily,
-        max_tokens: int,
-        max_cot_tokens: int,
-        tool_turn: bool,
-        do_sanitize: bool,
-        in_context_record: dict[str, Any] | None,
-        gate_info: dict[str, Any],
-        req_id: str,
-        mode: str,
-        started: float,
-    ) -> tuple[int, list[tuple[bytes, bytes]], dict[str, Any]]:
-        """Execute the measured closed-loop route natively over `/v1/chat/completions`.
+    ) -> bool:
+        """Verify once per `(dispatcher, model_id)` via `/tokenize` integer token IDs that the
+        active chat template renders `cybergate_open_think_prefix` as the exact prompt suffix
+        `RefusalSteeredCoTProcessor._should_steer` matches.
 
-        Passes `cybergate_open_think_prefix` via `chat_template_kwargs` so the kit's Jinja chat
-        template ends the prompt with `<|channel>thought\\n` + `OPEN_THINK_PREFIX` (or
-        `<think>\\n` + `OPEN_THINK_PREFIX` on Qwen3.8), matching `prompt_suffix_ids` in
-        `RefusalSteeredCoTProcessor` without detouring through `/v1/completions`.
+        Transient `/tokenize` errors are NOT cached and never fall back to disk-file existence.
         """
-        chat_payload = dict(payload)
-        existing_ctk = chat_payload.get("chat_template_kwargs")
-        ctk = dict(existing_ctk) if isinstance(existing_ctk, dict) else {}
-        ctk["enable_thinking"] = True
-        ctk["cybergate_open_think_prefix"] = family.open_think_prefix
-        ctk.setdefault("cybergate_default_system_prompt", "You are a helpful assistant.")
-        chat_payload["chat_template_kwargs"] = ctk
-        chat_payload["skip_special_tokens"] = False
+        cache_key = (id(self.dispatch), model_id)
+        cached = self._template_hook_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-        if tool_turn:
-            existing_xargs = chat_payload.get("vllm_xargs")
-            xargs = dict(existing_xargs) if isinstance(existing_xargs, dict) else {}
-            xargs[SUPPRESS_OPENER_XARG] = 1
-            chat_payload["vllm_xargs"] = xargs
-
-        total_gen_tokens = max_cot_tokens + max_tokens
-        if in_context_record and in_context_record.get("n_prefill_tokens"):
-            max_model_len = int(env_first("CYBERGATE_MAX_MODEL_LEN", default="262144") or 262144)
-            n_prefill = int(in_context_record["n_prefill_tokens"])
-            total_gen_tokens = max(64, min(total_gen_tokens, max_model_len - n_prefill - 128))
-        chat_payload["max_tokens"] = total_gen_tokens
-        chat_payload.pop("max_completion_tokens", None)
-
-        status, headers, chat_out = await self.dispatch.post_json(scope, CHAT_PATH, chat_payload)
-        choices = chat_out.get("choices")
-        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-            choice0 = choices[0]
-            msg = choice0.setdefault("message", {"role": "assistant", "content": ""})
-            gen_reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
-            raw_content = msg.get("content") or ""
-
-            if gen_reasoning:
-                raw_reasoning = (
-                    gen_reasoning
-                    if gen_reasoning.startswith(family.open_think_prefix)
-                    else f"{family.open_think_prefix}{gen_reasoning}"
-                )
-                visible_content = raw_content
-            elif family.thought_close_tag in raw_content:
-                cot_part, visible_content = raw_content.split(family.thought_close_tag, 1)
-                raw_reasoning = (
-                    cot_part
-                    if cot_part.startswith(family.open_think_prefix)
-                    else f"{family.open_think_prefix}{cot_part}"
-                )
-            elif raw_content and not msg.get("tool_calls"):
-                # If neither reasoning nor thought_close_tag is present, treat raw_content as visible
-                # when it doesn't look like an unclosed thought, or as reasoning if thought never closed.
-                raw_reasoning = family.open_think_prefix
-                visible_content = raw_content
-            else:
-                raw_reasoning = family.open_think_prefix
-                visible_content = raw_content
-
-            inline_marker = family.inline_cot_suppression.strip()
-            num_inline_injections = (
-                raw_reasoning.count(inline_marker) if inline_marker else 0
+        matched: bool | None = None
+        try:
+            s_suf, _, r_suf = await self.dispatch.post_json(
+                scope,
+                TOKENIZE_PATH,
+                {
+                    "model": model_id,
+                    "prompt": f"{family.thought_open}{family.open_think_prefix}",
+                    "add_special_tokens": False,
+                },
             )
-
-            if do_sanitize:
-                clean_reasoning, did_strip = strip_injected_think_boilerplate(
-                    raw_reasoning, family
-                )
-            else:
-                clean_reasoning, did_strip = raw_reasoning, False
-
-            clean_reasoning, visible_content = repair_thought_and_visible(
-                clean_reasoning, visible_content
+            s_msg, _, r_msg = await self.dispatch.post_json(
+                scope,
+                TOKENIZE_PATH,
+                {
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "chat_template_kwargs": {
+                        "enable_thinking": True,
+                        "cybergate_open_think_prefix": family.open_think_prefix,
+                    },
+                },
             )
-
-            if tool_turn and not msg.get("tool_calls") and visible_content:
-                visible_content, extracted_tcs, _ = extract_tool_calls_from_content(
-                    visible_content
+            if (
+                s_suf == 200
+                and s_msg == 200
+                and isinstance(r_suf, dict)
+                and isinstance(r_msg, dict)
+            ):
+                matched = tokens_match_open_think_suffix(
+                    r_msg.get("tokens"), r_suf.get("tokens")
                 )
-                if extracted_tcs:
-                    msg["tool_calls"] = extracted_tcs
-                    choice0["finish_reason"] = "tool_calls"
+                if matched and family.thought_close_tag:
+                    s_cls, _, r_cls = await self.dispatch.post_json(
+                        scope,
+                        TOKENIZE_PATH,
+                        {
+                            "model": model_id,
+                            "prompt": family.thought_close_tag,
+                            "add_special_tokens": False,
+                        },
+                    )
+                    if (
+                        s_cls == 200
+                        and isinstance(r_cls, dict)
+                        and isinstance(r_cls.get("tokens"), list)
+                        and r_cls["tokens"]
+                    ):
+                        self._close_tag_tokens_cache[cache_key] = tuple(
+                            int(t) for t in r_cls["tokens"]
+                        )
+        except Exception:
+            matched = None
 
-            msg["content"] = visible_content.strip() if visible_content else ""
-            msg["reasoning_content"] = clean_reasoning
-            msg["reasoning"] = clean_reasoning
-        else:
-            raw_reasoning = ""
-            clean_reasoning = ""
-            did_strip = False
-            num_inline_injections = 0
+        if matched is None:
+            return False
 
-        chat_out["x_cybergate"] = {
-            **gate_info,
-            "request_id": req_id,
-            "mode": mode,
-            "routed": "cybergate_measured_closed_loop",
-            "think_injected": True,
-            "steering": "measured_refusal_projection",
-            "num_inline_injections": num_inline_injections,
-            "boilerplate_stripped": did_strip,
-            "raw_reasoning_chars": len(raw_reasoning),
-            "clean_reasoning_chars": len(clean_reasoning),
-            "elapsed_s": round(time.time() - started, 3),
-        }
-        return status, headers, chat_out
+        self._template_hook_cache[cache_key] = matched
+        return matched
+
+    async def _resolve_effective_prefill_tokens(
+        self,
+        scope: dict[str, Any],
+        model_id: str,
+        messages: Sequence[dict[str, Any]],
+        tools: Any,
+        in_context_record: dict[str, Any] | None,
+        max_cot_tokens: int,
+        max_tokens: int,
+    ) -> tuple[int, int]:
+        """Return `(effective_prefill_tokens, max_model_len)` accounting for `system` and `tools`."""
+        max_model_len = int(env_first("CYBERGATE_MAX_MODEL_LEN", default="262144") or 262144)
+        probe_prefill = (
+            int(in_context_record["n_prefill_tokens"])
+            if (in_context_record and in_context_record.get("n_prefill_tokens"))
+            else 0
+        )
+        tool_list = tools if isinstance(tools, list) else None
+        est_tokens = estimate_chat_prompt_tokens(list(messages), tool_list)
+        effective = max(probe_prefill, est_tokens)
+
+        has_client_sys = any(
+            isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
+        )
+        if (tool_list or has_client_sys) and (
+            effective + max_cot_tokens + max_tokens + 128 > max_model_len // 2
+        ):
+            tok_req: dict[str, Any] = {"model": model_id, "messages": list(messages)}
+            if tool_list:
+                tok_req["tools"] = tool_list
+            try:
+                s_tok, _, r_tok = await self.dispatch.post_json(scope, TOKENIZE_PATH, tok_req)
+                if s_tok == 200 and isinstance(r_tok, dict):
+                    if "count" in r_tok:
+                        effective = max(probe_prefill, int(r_tok["count"]))
+                    if r_tok.get("max_model_len"):
+                        max_model_len = int(r_tok["max_model_len"])
+            except Exception:
+                pass
+
+        return effective, max_model_len
 
     async def _handle_chat(
         self,
@@ -555,6 +675,16 @@ class CyberGateThinkMiddleware:
         started: float,
     ) -> tuple[dict[str, Any], int, list[tuple[bytes, bytes]]]:
         """Probe, decide and route one chat request."""
+        expected_steer_tok = env_first("CYBERGATE_STEER_TOKEN")
+        if (
+            has_matching_steer_token(payload, expected_steer_tok)
+            and isinstance(payload.get("chat_template_kwargs"), dict)
+            and payload["chat_template_kwargs"].get("cybergate_open_think_prefix")
+        ):
+            status, headers, chat_out = await self.dispatch.post_json(scope, CHAT_PATH, payload)
+            return chat_out, status, headers
+
+        strip_cybergate_client_kwargs(payload, expected_steer_token=expected_steer_tok)
         messages = payload.get("messages", [])
         model_id = payload.get("model", DEFAULT_MODEL_ID)
         mode = str(payload.pop("cybergate_mode", self.default_mode)).lower()
@@ -590,13 +720,30 @@ class CyberGateThinkMiddleware:
                 scope, messages, user_turns, model_id, include_bos
             )
 
-        if in_context_record and in_context_record.get("n_prefill_tokens"):
-            max_model_len = int(env_first("CYBERGATE_MAX_MODEL_LEN", default="262144") or 262144)
-            n_prefill = int(in_context_record["n_prefill_tokens"])
+        max_total_tokens: int | None = None
+        has_context_signal = bool(
+            (in_context_record and in_context_record.get("n_prefill_tokens"))
+            or payload.get("tools")
+            or any(
+                isinstance(m, dict) and m.get("role") in ("system", "developer")
+                for m in messages
+            )
+        )
+        if has_context_signal:
+            n_prefill, max_model_len = await self._resolve_effective_prefill_tokens(
+                scope,
+                model_id,
+                messages,
+                payload.get("tools"),
+                in_context_record,
+                max_cot_tokens,
+                max_tokens,
+            )
             # Reserve 128 tokens for OPEN_THINK_PREFIX (~60 tokens) + special-token margin
+            max_total_tokens = max(64, max_model_len - n_prefill - 128)
             max_avail = max(64, max_model_len - n_prefill - max_cot_tokens - 128)
             if not caller_max_tokens:
-                max_tokens = max(256, min(default_max_tokens, max_avail))
+                max_tokens = min(default_max_tokens, max(64, max_avail))
             else:
                 max_tokens = min(max_tokens, max_avail)
                 if "max_tokens" in payload:
@@ -662,14 +809,48 @@ class CyberGateThinkMiddleware:
                     [(b"content-type", b"application/json")],
                 )
 
+        template_fallback_used = False
+        if gate_info["fired"] and is_native_closed_loop:
+            has_hook = await self._verify_template_hook(scope, model_id, family)
+            if not has_hook:
+                if tool_turn:
+                    msg_err = (
+                        f"CyberGate closed_loop with tools requires vLLM to be started with the "
+                        f"kit --chat-template for model {model_id!r} (cybergate_open_think_prefix "
+                        "was ignored by the active chat template)."
+                    )
+                    log_cybergate_event("CYBERGATE-MIDDLEWARE-WARN", f"req_id={req_id} {msg_err}")
+                    return (
+                        {
+                            "error": {
+                                "message": msg_err,
+                                "type": "ServerConfigurationError",
+                                "code": 500,
+                            }
+                        },
+                        500,
+                        [(b"content-type", b"application/json")],
+                    )
+                log_cybergate_event(
+                    "CYBERGATE-MIDDLEWARE-WARN",
+                    f"req_id={req_id} Active chat template for {model_id!r} ignored "
+                    "cybergate_open_think_prefix (missing --chat-template?); falling back to "
+                    "/v1/completions measured_closed_loop_route",
+                )
+                is_native_closed_loop = False
+                route_factory = measured_closed_loop_route
+                template_fallback_used = True
+
         if not gate_info["fired"] or (route_factory is None and not is_native_closed_loop):
             # Pass through untouched.
             status, headers, chat_out = await self.dispatch.post_json(scope, CHAT_PATH, payload)
             choices = chat_out.get("choices")
-            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-                msg0 = choices[0].get("message")
-                if isinstance(msg0, dict) and "reasoning_content" not in msg0:
-                    msg0["reasoning_content"] = msg0.get("reasoning") or ""
+            if isinstance(choices, list):
+                for ch_item in choices:
+                    if isinstance(ch_item, dict):
+                        msg_i = ch_item.get("message")
+                        if isinstance(msg_i, dict) and "reasoning_content" not in msg_i:
+                            msg_i["reasoning_content"] = msg_i.get("reasoning") or ""
             chat_out["x_cybergate"] = {
                 **gate_info,
                 "request_id": req_id,
@@ -681,20 +862,44 @@ class CyberGateThinkMiddleware:
             }
             final_chat_obj = chat_out
         elif is_native_closed_loop:
-            status, headers, final_chat_obj = await self._run_native_closed_loop_chat(
-                scope=scope,
-                payload=payload,
+            native_cfg = RouteConfig(
                 family=family,
+                model_id=model_id,
                 max_tokens=max_tokens,
+                temperature=temperature,
                 max_cot_tokens=max_cot_tokens,
-                tool_turn=tool_turn,
-                do_sanitize=do_sanitize,
-                in_context_record=in_context_record,
-                gate_info=gate_info,
-                req_id=req_id,
-                mode=mode,
-                started=started,
+                include_opener=not tool_turn,
+                include_bos=include_bos,
+                chat_completions_path=CHAT_PATH,
+                chat_payload=payload,
+                max_total_tokens=max_total_tokens,
+                sanitize_reasoning=do_sanitize,
+                close_tag_token_ids=self._close_tag_tokens_cache.get(
+                    (id(self.dispatch), model_id)
+                ),
             )
+            route = native_chat_closed_loop_route(mode, list(messages), native_cfg)
+            status, headers, result = await self._drive_route(scope, route)
+            final_chat_obj = dict(result.response)
+            if status >= 400 or not isinstance(final_chat_obj.get("choices"), list):
+                final_chat_obj["x_cybergate"] = {
+                    **gate_info,
+                    "request_id": req_id,
+                    "mode": mode,
+                    "routed": "upstream_error",
+                    "think_injected": False,
+                    "boilerplate_stripped": False,
+                    "upstream_status": status,
+                    "elapsed_s": round(time.time() - started, 3),
+                }
+            else:
+                final_chat_obj["x_cybergate"] = {
+                    **gate_info,
+                    "request_id": req_id,
+                    "mode": mode,
+                    **result.telemetry,
+                    "elapsed_s": round(time.time() - started, 3),
+                }
         else:
             extra_payload: dict[str, Any] = {"add_special_tokens": False}
             if tool_turn:
@@ -713,29 +918,47 @@ class CyberGateThinkMiddleware:
             route = route_factory(mode, list(messages), config)
             status, headers, result = await self._drive_route(scope, route)
 
-            if do_sanitize:
-                clean_reasoning, did_strip = strip_injected_think_boilerplate(
-                    result.raw_reasoning, family
-                )
-            else:
-                clean_reasoning, did_strip = result.raw_reasoning, False
-
-            final_chat_obj = self._wrap_chat_json(
-                comp_json=result.response,
-                model_id=model_id,
-                content=result.content,
-                reasoning_content=clean_reasoning,
-                x_cybergate={
+            if status >= 400 or not isinstance(result.response.get("choices"), list):
+                final_chat_obj = dict(result.response)
+                final_chat_obj["x_cybergate"] = {
                     **gate_info,
                     "request_id": req_id,
                     "mode": mode,
-                    **result.telemetry,
-                    "boilerplate_stripped": did_strip,
-                    "raw_reasoning_chars": len(result.raw_reasoning),
-                    "clean_reasoning_chars": len(clean_reasoning),
+                    "routed": "upstream_error",
+                    "think_injected": False,
+                    "boilerplate_stripped": False,
+                    "upstream_status": status,
                     "elapsed_s": round(time.time() - started, 3),
-                },
-            )
+                }
+            else:
+                if do_sanitize:
+                    clean_reasoning, did_strip = strip_injected_think_boilerplate(
+                        result.raw_reasoning, family
+                    )
+                else:
+                    clean_reasoning, did_strip = result.raw_reasoning, False
+
+                extra_tele: dict[str, Any] = {}
+                if template_fallback_used:
+                    extra_tele["template_hook_fallback"] = "completions"
+
+                final_chat_obj = self._wrap_chat_json(
+                    comp_json=result.response,
+                    model_id=model_id,
+                    content=result.content,
+                    reasoning_content=clean_reasoning,
+                    x_cybergate={
+                        **gate_info,
+                        "request_id": req_id,
+                        "mode": mode,
+                        **result.telemetry,
+                        **extra_tele,
+                        "boilerplate_stripped": did_strip,
+                        "raw_reasoning_chars": len(result.raw_reasoning),
+                        "clean_reasoning_chars": len(clean_reasoning),
+                        "elapsed_s": round(time.time() - started, 3),
+                    },
+                )
 
         telemetry = final_chat_obj.setdefault("x_cybergate", {})
         final_chat_obj["x_cybergate"] = telemetry

@@ -31,8 +31,9 @@ os.environ["CYBERGATE_PROXY_PORT"] = "0"
 # stand down for the suite to run at all. `tests/unit/test_kit_binding.py` clears this flag with
 # monkeypatch and asserts the enforcing path, so the check itself is still covered.
 os.environ["CYBERGATE_SKIP_KIT_CHECK"] = "1"
-# Never let a test reach an external gate endpoint.
+# Never let a test reach an external gate endpoint or inherit a host steer token.
 os.environ.pop("CYBERGATE_GATE_URL", None)
+os.environ.pop("CYBERGATE_STEER_TOKEN", None)
 
 for path in (_SRC, _BASELINE.parent):
     if str(path) not in sys.path:

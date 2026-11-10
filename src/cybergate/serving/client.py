@@ -14,16 +14,25 @@ import json
 import os
 import ssl
 import time
+import urllib.error
 import urllib.request
 import uuid
 from typing import Any, Sequence
 
 from ..boilerplate import strip_injected_think_boilerplate
-from ..config import DEFAULT_MODEL_ID
+from ..config import DEFAULT_MODEL_ID, env_first
 from ..decision import evaluate_gate_for_messages
-from ..families import family_for_model_id
+from ..families import ModelFamily, family_for_model_id
 from ..state import clear_request_gate_state
-from .think_routes import RouteConfig, drive_sync, route_for_mode
+from .postprocess import tokens_match_open_think_suffix
+from .think_routes import (
+    MEASURED_MODES,
+    RouteConfig,
+    drive_sync,
+    native_chat_closed_loop_route,
+    route_for_mode,
+    steering_enabled,
+)
 
 __all__ = ["CyberGateVLLMClient"]
 
@@ -52,6 +61,8 @@ class CyberGateVLLMClient:
         self.timeout = timeout
         self.sanitize_reasoning = sanitize_reasoning
         self.enable_multi_turn_stickiness = enable_multi_turn_stickiness
+        self._template_hook_cache: dict[str, bool] = {}
+        self._close_tag_tokens_cache: dict[str, tuple[int, ...]] = {}
 
         self._ssl_ctx = ssl.create_default_context()
         if not verify_ssl:
@@ -77,6 +88,92 @@ class CyberGateVLLMClient:
             request, timeout=self.timeout, context=self._ssl_ctx
         ) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def _root_url(self) -> str:
+        return self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+
+    def _supports_native_chat_hook(self, family: ModelFamily) -> bool:
+        """Lazily verify via `/tokenize` integer token IDs whether the remote server loaded the kit
+        `--chat-template` (transient `/tokenize` errors are not cached).
+        """
+        cached = self._template_hook_cache.get(self.model_id)
+        if cached is not None:
+            return cached
+        tok_url = f"{self._root_url()}/tokenize"
+        matched: bool | None = None
+        try:
+            req_suf = urllib.request.Request(
+                tok_url,
+                data=json.dumps(
+                    {
+                        "model": self.model_id,
+                        "prompt": f"{family.thought_open}{family.open_think_prefix}",
+                        "add_special_tokens": False,
+                    }
+                ).encode("utf-8"),
+                headers=self._headers(),
+                method="POST",
+            )
+            with urllib.request.urlopen(  # noqa: S310 - operator-configured endpoint
+                req_suf, timeout=min(10, self.timeout), context=self._ssl_ctx
+            ) as r_suf:
+                d_suf = json.loads(r_suf.read().decode("utf-8"))
+            req_msg = urllib.request.Request(
+                tok_url,
+                data=json.dumps(
+                    {
+                        "model": self.model_id,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "chat_template_kwargs": {
+                            "enable_thinking": True,
+                            "cybergate_open_think_prefix": family.open_think_prefix,
+                        },
+                    }
+                ).encode("utf-8"),
+                headers=self._headers(),
+                method="POST",
+            )
+            with urllib.request.urlopen(  # noqa: S310 - operator-configured endpoint
+                req_msg, timeout=min(10, self.timeout), context=self._ssl_ctx
+            ) as r_msg:
+                d_msg = json.loads(r_msg.read().decode("utf-8"))
+            if isinstance(d_suf, dict) and isinstance(d_msg, dict):
+                matched = tokens_match_open_think_suffix(
+                    d_msg.get("tokens"), d_suf.get("tokens")
+                )
+                if matched and family.thought_close_tag:
+                    req_cls = urllib.request.Request(
+                        tok_url,
+                        data=json.dumps(
+                            {
+                                "model": self.model_id,
+                                "prompt": family.thought_close_tag,
+                                "add_special_tokens": False,
+                            }
+                        ).encode("utf-8"),
+                        headers=self._headers(),
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(  # noqa: S310 - operator-configured endpoint
+                        req_cls, timeout=min(10, self.timeout), context=self._ssl_ctx
+                    ) as r_cls:
+                        d_cls = json.loads(r_cls.read().decode("utf-8"))
+                    if (
+                        isinstance(d_cls, dict)
+                        and isinstance(d_cls.get("tokens"), list)
+                        and d_cls["tokens"]
+                    ):
+                        self._close_tag_tokens_cache[self.model_id] = tuple(
+                            int(t) for t in d_cls["tokens"]
+                        )
+        except Exception:
+            matched = None
+
+        if matched is None:
+            return False
+
+        self._template_hook_cache[self.model_id] = matched
+        return matched
 
     def list_models(self) -> dict[str, Any]:
         url = f"{self.base_url}/models"
@@ -117,6 +214,50 @@ class CyberGateVLLMClient:
         started = time.time()
 
         try:
+            if active_mode == "baseline":
+                route_factory = None
+            else:
+                route_factory = route_for_mode(active_mode)
+                if route_factory is None:
+                    raise ValueError(f"Unsupported mode: {active_mode!r}")
+
+            bare_pass_through_resp: dict[str, Any] | None = None
+            if force_gate is None and prompt_key is None and self.gate_http_url is None:
+                if active_mode == "baseline":
+                    server_resp = self._post_json(
+                        "/chat/completions",
+                        {
+                            "model": self.model_id,
+                            "messages": list(messages),
+                            "max_tokens": max_tokens,
+                            "temperature": temperature,
+                        },
+                    )
+                    if isinstance(server_resp.get("x_cybergate"), dict):
+                        return server_resp
+                    bare_pass_through_resp = server_resp
+                else:
+                    server_payload: dict[str, Any] = {
+                        "model": self.model_id,
+                        "messages": list(messages),
+                        "max_tokens": max_tokens,
+                        "max_cot_tokens": max_cot_tokens,
+                        "temperature": temperature,
+                        "cybergate_mode": active_mode,
+                        "sanitize_reasoning": do_sanitize,
+                        "enable_multi_turn_stickiness": do_sticky,
+                    }
+                    if not include_opener:
+                        server_payload["cybergate_tool_turn"] = True
+                    try:
+                        server_resp = self._post_json("/chat/completions", server_payload)
+                        if isinstance(server_resp.get("x_cybergate"), dict):
+                            return server_resp
+                        bare_pass_through_resp = server_resp
+                    except urllib.error.HTTPError as exc:
+                        if exc.code not in (400, 422):
+                            raise
+
             gate_info = evaluate_gate_for_messages(
                 messages=messages,
                 model_id=self.model_id,
@@ -131,14 +272,18 @@ class CyberGateVLLMClient:
                 gate_info["source"] = f"{gate_info.get('source', 'probe')}+forced({force_gate})"
 
             if active_mode == "baseline" or not gate_info["fired"]:
-                raw_response = self._post_json(
-                    "/chat/completions",
-                    {
-                        "model": self.model_id,
-                        "messages": list(messages),
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                    },
+                raw_response = (
+                    bare_pass_through_resp
+                    if bare_pass_through_resp is not None
+                    else self._post_json(
+                        "/chat/completions",
+                        {
+                            "model": self.model_id,
+                            "messages": list(messages),
+                            "max_tokens": max_tokens,
+                            "temperature": temperature,
+                        },
+                    )
                 )
                 raw_response["x_cybergate"] = {
                     **gate_info,
@@ -151,11 +296,52 @@ class CyberGateVLLMClient:
                 }
                 return raw_response
 
-            route_factory = route_for_mode(active_mode)
-            if route_factory is None:
-                raise ValueError(f"Unsupported mode: {active_mode!r}")
-
+            assert route_factory is not None
             family = family_for_model_id(self.model_id)
+            has_steer_tok = bool((env_first("CYBERGATE_STEER_TOKEN") or "").strip())
+
+            if active_mode in MEASURED_MODES and self._supports_native_chat_hook(family):
+                native_cfg = RouteConfig(
+                    family=family,
+                    model_id=self.model_id,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    max_cot_tokens=max_cot_tokens,
+                    include_opener=include_opener,
+                    include_bos=family.supports_bos,
+                    chat_completions_path="/chat/completions",
+                    sanitize_reasoning=do_sanitize,
+                    close_tag_token_ids=self._close_tag_tokens_cache.get(self.model_id),
+                )
+                result = drive_sync(
+                    native_chat_closed_loop_route(active_mode, list(messages), native_cfg),
+                    lambda request: self._post_json(request.path, request.payload),
+                )
+                chat_resp = result.response
+                upstream_xcg = (
+                    chat_resp.get("x_cybergate")
+                    if isinstance(chat_resp.get("x_cybergate"), dict)
+                    else None
+                )
+                tele = dict(result.telemetry)
+                if upstream_xcg is not None and upstream_xcg.get("think_injected") is False:
+                    tele["think_injected"] = False
+                    tele["steering"] = "stripped_missing_steer_token"
+                elif (
+                    steering_enabled()
+                    and not has_steer_tok
+                    and tele.get("num_inline_injections", 0) == 0
+                ):
+                    tele["steering"] = "unconfirmed_no_steer_token"
+                chat_resp["x_cybergate"] = {
+                    **gate_info,
+                    "request_id": req_id,
+                    "mode": active_mode,
+                    **tele,
+                    "elapsed_s": round(time.time() - started, 3),
+                }
+                return chat_resp
+
             config = RouteConfig(
                 family=family,
                 model_id=self.model_id,
@@ -179,6 +365,22 @@ class CyberGateVLLMClient:
             else:
                 clean_reasoning, did_strip = result.raw_reasoning, False
 
+            tele_comp = dict(result.telemetry)
+            lock_marker = family.bottom_compliance_lock.strip()
+            has_lock = bool(
+                active_mode in MEASURED_MODES
+                and lock_marker
+                and lock_marker in result.raw_reasoning
+            )
+            if (
+                active_mode in MEASURED_MODES
+                and steering_enabled()
+                and not has_steer_tok
+                and tele_comp.get("num_inline_injections", 0) == 0
+                and not has_lock
+            ):
+                tele_comp["steering"] = "unconfirmed_no_steer_token"
+
             return self._wrap_completion_as_chat(
                 comp_resp=result.response,
                 content=result.content,
@@ -187,7 +389,7 @@ class CyberGateVLLMClient:
                     **gate_info,
                     "request_id": req_id,
                     "mode": active_mode,
-                    **result.telemetry,
+                    **tele_comp,
                     "boilerplate_stripped": did_strip,
                     "raw_reasoning_chars": len(result.raw_reasoning),
                     "clean_reasoning_chars": len(clean_reasoning),
@@ -223,7 +425,6 @@ class CyberGateVLLMClient:
                 }
             ],
             "usage": comp_resp.get("usage", {}),
-            "x_cybergate": x_cybergate,
             "x_cybergate": x_cybergate,
         }
 

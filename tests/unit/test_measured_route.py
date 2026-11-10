@@ -251,3 +251,80 @@ def test_extra_payload_reaches_the_completion_request() -> None:
     _, payload = transport.calls[0]
     assert payload["vllm_xargs"] == {SUPPRESS_OPENER_XARG: 1}
     assert payload["add_special_tokens"] is False
+
+
+def test_native_chat_closed_loop_route_closed_and_unclosed_thoughts() -> None:
+    """`native_chat_closed_loop_route` handles both split reasoning and unclosed thoughts safely."""
+    from cybergate.serving.think_routes import native_chat_closed_loop_route
+
+    qwen_cfg = _config(
+        "qwen38",
+        model_id="Qwen/Qwen3.8-27B",
+        chat_completions_path="/v1/chat/completions",
+        sanitize_reasoning=True,
+    )
+
+    # 1. Normal closed thought (split by vLLM reasoning parser)
+    calls_closed: list[tuple[str, dict[str, Any]]] = []
+
+    def _transport_closed(req: Any) -> dict[str, Any]:
+        calls_closed.append((req.path, dict(req.payload)))
+        return {
+            "id": "chatcmpl-1",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "reasoning": f"- Step 1: derive.{INLINE_COT_SUPPRESSION} continue.",
+                        "content": "Final visible answer.",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+    res_closed = drive_sync(
+        native_chat_closed_loop_route("closed_loop", MESSAGES, qwen_cfg),
+        _transport_closed,
+    )
+    assert len(calls_closed) == 1
+    assert calls_closed[0][0] == "/v1/chat/completions"
+    assert calls_closed[0][1]["temperature"] == 0.0
+    assert (
+        calls_closed[0][1]["chat_template_kwargs"]["cybergate_open_think_prefix"]
+        == qwen_cfg.family.open_think_prefix
+    )
+    assert res_closed.content == "Final visible answer."
+    assert res_closed.telemetry["thought_close_tag_present"] is True
+    assert res_closed.telemetry["num_inline_injections"] == 1
+    assert res_closed.telemetry["boilerplate_stripped"] is True
+    assert INLINE_COT_SUPPRESSION.strip() not in res_closed.raw_reasoning
+
+    # 2. Unclosed thought (reasoning empty, no </think> in content, finish_reason="length")
+    def _transport_unclosed(req: Any) -> dict[str, Any]:
+        return {
+            "id": "chatcmpl-2",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "reasoning": "",
+                        "content": f"- Step 1: raw CoT {INLINE_COT_SUPPRESSION} still thinking at max_tokens",
+                    },
+                    "finish_reason": "length",
+                }
+            ],
+        }
+
+    res_unclosed = drive_sync(
+        native_chat_closed_loop_route("closed_loop", MESSAGES, qwen_cfg),
+        _transport_unclosed,
+    )
+    assert res_unclosed.content == ""
+    assert res_unclosed.response["choices"][0]["message"]["content"] == ""
+    assert res_unclosed.telemetry["thought_close_tag_present"] is False
+    assert res_unclosed.telemetry["num_inline_injections"] == 1
+    assert INLINE_COT_SUPPRESSION.strip() not in res_unclosed.response["choices"][0]["message"]["reasoning_content"]
+    assert "still thinking at max_tokens" in res_unclosed.response["choices"][0]["message"]["reasoning_content"]

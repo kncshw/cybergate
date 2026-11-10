@@ -94,6 +94,7 @@ def test_policy_has_no_module_level_mutable_state() -> None:
         "cybergate/decision/inputs.py",
         "cybergate/decision/outcome.py",
         "cybergate/decision/rules.py",
+        "cybergate/serving/postprocess.py",
         "cybergate/serving/proxy.py",
         "cybergate/state/keys.py",
     ],

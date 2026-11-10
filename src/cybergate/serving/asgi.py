@@ -103,8 +103,14 @@ class AsgiDispatcher:
         return status, response_headers, parsed
 
 
-def replay_body(raw_body: bytes) -> Callable[[], Any]:
-    """Build a `receive` callable that replays an already-consumed request body once."""
+def replay_body(
+    raw_body: bytes,
+    disconnect_receive: Callable[..., Any] | None = None,
+) -> Callable[[], Any]:
+    """Build a `receive` callable that replays an already-consumed request body once, then hands
+    subsequent reads back to `disconnect_receive` so disconnect monitors (such as vLLM's
+    `@with_cancellation`) block until the client actually disconnects.
+    """
     sent = False
 
     async def _receive() -> dict[str, Any]:
@@ -112,6 +118,8 @@ def replay_body(raw_body: bytes) -> Callable[[], Any]:
         if not sent:
             sent = True
             return {"type": "http.request", "body": raw_body, "more_body": False}
+        if disconnect_receive is not None:
+            return await disconnect_receive()
         return {"type": "http.disconnect"}
 
     return _receive

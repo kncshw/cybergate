@@ -58,9 +58,11 @@ speculated one cannot both be honoured.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hmac
+import os
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ..config import SUPPRESS_OPENER_XARG, env_first
+from ..config import STEER_AUTH_XARG, SUPPRESS_OPENER_XARG, env_first
 from .steering_config import DEFAULT_HEARTBEAT_APPLIES, SteeringConfig, SteeringStats
 from ..families import ModelFamily, family_for_model_id
 from ..telemetry.log import log_cybergate_event
@@ -157,6 +159,8 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
         self.device = device
         self.is_pin_memory = is_pin_memory
         self.config = SteeringConfig.from_env()
+        self._steer_token_configured = "CYBERGATE_STEER_TOKEN" in os.environ
+        self.expected_steer_token = (os.environ.get("CYBERGATE_STEER_TOKEN") or "").strip()
         self.stats = SteeringStats()
         self._rows: dict[int, _RowState] = {}
         self._apply_calls = 0
@@ -303,7 +307,7 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
         for row, params, prompt_tok_ids, output_tok_ids in batch_update.added:
             # An added row replaces whatever was there.
             self._rows.pop(row, None)
-            if self._should_steer(prompt_tok_ids):
+            if self._should_steer(prompt_tok_ids, params):
                 assert prompt_tok_ids is not None  # _should_steer rejects None
                 force_opener = not _opener_declined(params)
                 self._rows[row] = _RowState(
@@ -423,8 +427,19 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
     # ---------------------------------------------------------------------------------------------
     # Internals
     # ---------------------------------------------------------------------------------------------
-    def _should_steer(self, prompt_tok_ids: Sequence[int] | None) -> bool:
-        """True when this request's prompt ends with the family's open-thought prefix."""
+    def _should_steer(self, prompt_tok_ids: Sequence[int] | None, params: Any = None) -> bool:
+        """True when this request's prompt ends with the family's open-thought prefix (and carries
+        the server-only `STEER_AUTH_XARG` token when `CYBERGATE_STEER_TOKEN` is configured).
+        """
+        if self._steer_token_configured:
+            if not self.expected_steer_token:
+                return False
+            extra = getattr(params, "extra_args", None) or {}
+            supplied = extra.get(STEER_AUTH_XARG)
+            if not isinstance(supplied, str) or not hmac.compare_digest(
+                supplied, self.expected_steer_token
+            ):
+                return False
         if not prompt_tok_ids or not self.prompt_suffix_ids:
             return False
         suffix = self.prompt_suffix_ids

@@ -10,7 +10,7 @@ steer the answer. The weights are never modified — `K = 0.0`, no ablation, no 
 nothing persists between requests.
 
 ```
-pytest          # 991 passed, 1 skipped, 7 xfailed, no GPU, no network, ~4.8 s
+pytest          # 1032 passed, 1 skipped, 7 xfailed, no GPU, no network, ~8 s
 ```
 
 ## Why read activations instead of editing weights
@@ -157,15 +157,56 @@ A single container loads the model into GPU memory **once** and binds **two Open
 
 | Port | OpenAI API Base URL | Mode | What to Connect Here |
 |---|---|---|---|
-| **Port `8000`** *(Pristine by default)* | `http://localhost:8000/v1` | `CYBERGATE_MODE=baseline` | **Pristine (Un-Steered by Default) Model.** Requests without a `"cybergate_mode"` override in the JSON body pass straight through to the unmodified base model (`routed="pristine_pass_through"`), while still running the prefill activation probe and returning `x_cybergate` telemetry. Use `:8000` (with `"cybergate_mode"` in the JSON body) for raw gate measurements. **Note:** Any caller who can reach `:8000` can activate the gate by passing `"cybergate_mode": "closed_loop"` in the request body; do not expose `:8000` to callers who must not access gated mode. |
-| **Port `8001`** *(CyberGate)* | `http://localhost:8001/v1` | `cybergate_mode=closed_loop` | **CyberGate (Gated) Agent/Chat Bridge.** Requests go through the two-factor activation gate (`cos(h, c) >= tau` and `s_ref_z >= +1.50`) + inline CoT refusal steering, OpenAI `tools`/`<tool_call>` normalization, multi-turn history compaction, and `[CyberGate \| ...]` telemetry header. Point **OpenCode**, **MCP agents**, **Open WebUI**, or gated API clients to `:8001/v1`. |
+| **Port `8000`** *(Un-gated by default)* | `http://localhost:8000/v1` | `CYBERGATE_MODE=baseline` | **Un-Steered Base Model.** Requests without a `"cybergate_mode"` override in the JSON body pass straight through without `<think>` prefill or CoT steering (`routed="pristine_pass_through"`), while still running the prefill activation probe, returning `x_cybergate` telemetry, and sharing the engine-wide kit `--chat-template` (on Qwen3.8 this defaults `reasoning_effort` to `'medium'` rather than stock `'xhigh'` and `preserve_thinking` to `false` outside active tool loops; on Gemma-4 it includes OpenAI tool-loop and `response`-schema fixes), `--reasoning-parser` (separating reasoning into `reasoning_content`), and `--tool-call-parser`. Use `:8000` (with `"cybergate_mode"` in the JSON body) for raw gate measurements. **Note:** Any caller who can reach `:8000` can activate the gate by passing `"cybergate_mode": "closed_loop"` in the request body; do not expose `:8000` to callers who must not access gated mode. |
+| **Port `8001`** *(CyberGate)* | `http://localhost:8001/v1` | `cybergate_mode=closed_loop` | **CyberGate (Gated) Agent/Chat Bridge.** Requests go through the two-factor activation gate (`cos(h, c) >= tau` and `s_ref_z >= +1.50`) + inline CoT refusal steering, OpenAI `tools`/`<tool_call>` normalization, prior assistant boilerplate cleaning, `/tokenize`-backed `max_tokens` clamping, and `[CyberGate \| ...]` telemetry header. Point **OpenCode**, **MCP agents**, **Open WebUI**, or gated API clients to `:8001/v1`. |
 
 > **Security, network binding, logging & `:8001` bridge notes:**
 > - **Bind addresses, authentication & access control:** `middleware.py` and `serve_eval.sh` bind the `:8001` proxy to `127.0.0.1` by default (`CYBERGATE_PROXY_HOST=127.0.0.1`). The two `docker-compose.*.yml` files set `network_mode: host`, `vllm serve --host 0.0.0.0`, and `CYBERGATE_PROXY_HOST=0.0.0.0` so both `:8000` and `:8001` are reachable across the host network, and **neither port requires authentication in the default Compose configuration**. To restrict access on shared networks, either set `--host 127.0.0.1` and `CYBERGATE_PROXY_HOST=127.0.0.1` (and connect via `ssh -L 8000:127.0.0.1:8000 -L 8001:127.0.0.1:8001 user@gpu-host`), apply a host firewall rule (`ufw` / `iptables`, which applies directly under `network_mode: host`), or pass `--api-key <key>` to `vllm serve` (`:8001` forwards the `Authorization` header to `:8000`).
 > - **Conversation trace logs:** Outside Docker Compose, `CYBERGATE_PROXY_TRACE_JSONL` and `CYBERGATE_PROXY_DEBUG_LOG` default to `""` (disabled). The two `docker-compose.*.yml` files set both to `/work/cybergate_public/logs/...` inside the container (mounted from `./logs/` on the host), recording full request/response conversation traces.
-> - **`:8001` agent/chat bridge behavior vs `:8000`:** Port `:8001` is an agent/chat normalization bridge rather than a transparent byte proxy (use `:8000` with `"cybergate_mode"` for raw benchmark evaluation). Specifically, `:8001`: (1) strips prior `<think>` blocks and compacts long assistant history turns; (2) merges any caller `system` message with the `<tool_call>` instruction prompt when `tools` are declared and converts `role: "tool"` turns into `[Tool Execution Output]` user turns; (3) routes Open WebUI `### Task:` background metadata prompts to `cybergate_mode="baseline"`; (4) defaults `max_tokens` to `min(CYBERGATE_DEFAULT_MAX_TOKENS, remaining_context)` (`CYBERGATE_DEFAULT_MAX_TOKENS=4096` when omitted); and (5) buffers the upstream `:8000` response (with timeout `CYBERGATE_PROXY_TIMEOUT=600` seconds, returning HTTP `502` on upstream timeout) before emitting JSON or SSE chunks so `<tool_call>` blocks and reasoning splits can be repaired cleanly.
+> - **`:8001` agent/chat bridge behavior vs `:8000`:** Port `:8001` is an agent/chat normalization bridge rather than a transparent byte proxy (use `:8000` with `"cybergate_mode"` for raw benchmark evaluation). Specifically, `:8001`: (1) strips CyberGate's own prior `<think>` blocks, `[CyberGate | ...]` headers, and injected disclaimers from assistant history without truncating or compacting conversation messages (leaving session compaction to the agent harness and preserving KV prefix caching); (2) preserves OpenAI `tools`, `tool_calls`, and `role: "tool"` messages natively for vLLM's chat template and tool parser while collapsing multiple system messages into a single leading `role: "system"` turn; (3) routes Open WebUI `### Task:` background metadata prompts to `cybergate_mode="baseline"`; (4) queries `/tokenize` to cap `max_tokens` to the remaining context window (defaulting to `min(CYBERGATE_DEFAULT_MAX_TOKENS, remaining_context)` with `CYBERGATE_DEFAULT_MAX_TOKENS=4096` when omitted) while passing upstream `"maximum context length"` HTTP `400` responses through unchanged so harnesses like OpenCode compact and retry; and (5) buffers the upstream `:8000` response (with timeout `CYBERGATE_PROXY_TIMEOUT=600` seconds, returning HTTP `502` on upstream timeout) before emitting JSON or SSE chunks so reasoning splits and fallback `<tool_call>` / `call:` blocks can be repaired and deduplicated cleanly.
 
-#### 3. Side-by-Side Example (`:8000` Pristine vs `:8001` CyberGate)
+#### 3. Connecting OpenCode (`~/.config/opencode/opencode.json`)
+
+Configure `:8001` as an OpenAI-compatible custom provider so tools are enabled by default and OpenCode's built-in session compaction knows vLLM's real context limit:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "cybergate/Qwen/Qwen3.8-27B",
+  "provider": {
+    "cybergate": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "CyberGate vLLM",
+      "options": {
+        "baseURL": "http://127.0.0.1:8001/v1",
+        "apiKey": "EMPTY"
+      },
+      "models": {
+        "Qwen/Qwen3.8-27B": {
+          "name": "Qwen3.8-27B (CyberGate)",
+          "tool_call": true,
+          "limit": {
+            "context": 262144,
+            "output": 16384
+          }
+        },
+        "google/gemma-4-26B-A4B-it": {
+          "name": "Gemma-4-26B-A4B-it (CyberGate)",
+          "tool_call": true,
+          "limit": {
+            "context": 262144,
+            "output": 16384
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Set `limit.context` to match vLLM's `--max-model-len` (`262144` in `docker-compose.*.yml`, or e.g. `32768` if serving manually with `--max-model-len 32768`) and `limit.output` large enough for both reasoning and the final answer (`Qwen3.8` steered calls add a `2048`-token thought budget by default; `:8001` caps `max_tokens` to the remaining window automatically).
+
+#### 4. Side-by-Side `curl` Example (`:8000` Pristine vs `:8001` CyberGate)
 
 ```bash
 # Connect to Port 8000 -> Pristine (un-gated) base model response
@@ -185,7 +226,7 @@ curl -s http://localhost:8001/v1/chat/completions \
   }'
 ```
 
-#### 4. Verify the Live Deployment
+#### 5. Verify the Live Deployment
 
 ```bash
 # Verify Gemma-4 container
@@ -243,10 +284,12 @@ vllm serve google/gemma-4-26B-A4B-it \
   --quantization fp8_per_channel \
   --enforce-eager --enable-prefix-caching --attention-backend TRITON_ATTN \
   --max-model-len 32768 --gpu-memory-utilization 0.88 \
+  --chat-template .../kits/gemma4/chat_template.jinja \
+  --reasoning-parser gemma4 --enable-auto-tool-choice --tool-call-parser gemma4 \
   --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware
 ```
 
-None of those four flags is a preference:
+None of those flags is a preference:
 
 | flag | why |
 |---|---|
@@ -254,6 +297,7 @@ None of those four flags is a preference:
 | `--enable-prefix-caching` | reuses KV blocks across multi-turn chats and Pass-1 $\to$ Pass-2 generation (Pass-1 probes set per-turn `cache_salt` so hooks always observe the full prompt) |
 | `--enforce-eager` | compiled graphs elide the hidden states the hooks read |
 | `--attention-backend TRITON_ATTN` | the backend everything here was measured on |
+| `--chat-template .../chat_template.jinja` | renders `cybergate_open_think_prefix` on `/v1/chat/completions` so `RefusalSteeredCoTProcessor` steers native chat and tool turns |
 
 The endpoint stays a standard OpenAI-compatible one. `CYBERGATE_MODE` sets the default, so an
 ordinary client needs no custom request fields; `cybergate_mode`, `max_cot_tokens` and the rest are

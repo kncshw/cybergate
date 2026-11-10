@@ -1,3 +1,16 @@
+{#
+  Template: Qwen/Qwen3.8-27B Chat Template (with CyberGate open-think prefix hook)
+  Base: Qwen/Qwen3.8-27B HF snapshot 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0, incorporating
+        `{% generation %}` assistant-masking tags from upstream commit 37561816 (2026-11-07)
+  Changes from stock:
+    1. Added `cybergate_open_think_prefix` (`cg_prefix`) and `cybergate_default_system_prompt` (`cg_sys`)
+       hooks for native `/v1/chat/completions` closed-loop CoT steering.
+    2. Changed default `reasoning_effort` from `'xhigh'` to `'medium'` (and aliased OpenAI/OpenCode
+       `'minimal'` -> `'low'` and `'high'`/`'max'` -> `'xhigh'`) so steered renders match the measured
+       `build_raw_prompt(closed_loop_step1)` scaffold while supporting OpenCode variant toggles.
+    3. Changed `preserve_thinking` default from `true` to `false` for finished prior turns before
+       `last_query_index` (active multi-step tool loops after `last_query_index` still preserve `<think>`).
+#}
 {%- set image_count = namespace(value=0) %}
 {%- set video_count = namespace(value=0) %}
 {%- macro render_content(content, do_vision_count, is_system_content=false) %}
@@ -42,14 +55,16 @@
 {%- if not messages %}
     {{- raise_exception('No messages provided.') }}
 {%- endif %}
-{%- set cg_prefix = cybergate_open_think_prefix if (cybergate_open_think_prefix is defined and cybergate_open_think_prefix) else (chat_template_kwargs.get('cybergate_open_think_prefix') if (chat_template_kwargs is defined and chat_template_kwargs is mapping) else None) %}
-{%- set cg_sys = cybergate_default_system_prompt if (cybergate_default_system_prompt is defined and cybergate_default_system_prompt) else (chat_template_kwargs.get('cybergate_default_system_prompt') if (chat_template_kwargs is defined and chat_template_kwargs is mapping) else None) %}
+{%- set cg_prefix = cybergate_open_think_prefix if (cybergate_open_think_prefix is defined and cybergate_open_think_prefix) else None %}
+{%- set cg_sys = cybergate_default_system_prompt if (cybergate_default_system_prompt is defined and cybergate_default_system_prompt) else None %}
 {%- set reasoning_instructions = '' %}
 {%- if enable_thinking is undefined or enable_thinking is true %}
-    {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}
-    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}
-        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ '. Supported types are xhigh (default), medium, and low.') }}
+    {%- set raw_effort = (reasoning_effort | default('medium')) | lower %}
+    {%- set effort_map = {'minimal': 'low', 'low': 'low', 'medium': 'medium', 'high': 'xhigh', 'xhigh': 'xhigh', 'max': 'xhigh'} %}
+    {%- if raw_effort not in effort_map %}
+        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ '. Supported types are low, medium (default), high, and xhigh.') }}
     {%- endif %}
+    {%- set resolved_reasoning_effort = effort_map[raw_effort] %}
     {%- if resolved_reasoning_effort == 'xhigh' %}
         {%- set reasoning_instructions = 'Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.' %}
     {%- elif resolved_reasoning_effort == 'low' %}
@@ -121,7 +136,7 @@
         {%- set reasoning_content = reasoning_content|trim %}
         {{- '<|im_start|>' + message.role + '\n' }}
         {%- generation %}
-        {%- if preserve_thinking is undefined or preserve_thinking is true or loop.index0 > ns.last_query_index %}
+        {%- if (preserve_thinking is defined and preserve_thinking is true) or loop.index0 > ns.last_query_index %}
             {{- '<think>\n' + reasoning_content + '\n</think>\n\n' + content }}
         {%- else %}
             {{- content }}

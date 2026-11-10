@@ -129,8 +129,8 @@ fi
 # Serving requirements the kit declares for itself. This was a hardcoded `*[Qq]wen*) PARSER=qwen3`
 # arm, which a third kit could not have expressed without editing this script.
 : "${PARSER:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("reasoning_parser") or "")' "$MANIFEST")}"
-TOOL_PARSER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("tool_call_parser") or "")' "$MANIFEST")
-CHAT_TPL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("chat_template") or "")' "$MANIFEST")
+: "${TOOL_PARSER:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("tool_call_parser") or "")' "$MANIFEST")}"
+: "${CHAT_TPL:=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m.get("files",{}).get("chat_template") or m.get("serve",{}).get("chat_template") or "")' "$MANIFEST")}"
 
 # The manifest names the default operator and refusal direction, so those filenames live in exactly
 # one place. `--op`/`--ref` still override, and are resolved inside the kit.
@@ -159,7 +159,7 @@ echo
 # ---- pre-flight. Each check is a failure mode that has actually happened here. ----------------
 command -v docker >/dev/null || { echo "FATAL: docker not found (for Colab or no-Docker hosts, pass --no-docker or use scripts/serving/serve_no_docker.sh)" >&2; exit 1; }
 [ -f "$REPO/pyproject.toml" ] || { echo "FATAL: --repo $REPO is not the cybergate tree" >&2; exit 1; }
-for f in "$OP" "$REF"; do
+for f in "$OP" "$REF" ${CHAT_TPL:+"$CHAT_TPL"}; do
   [ -f "$KIT_DIR/$f" ] || { echo "FATAL: missing $KIT_DIR/$f" >&2; exit 1; }
 done
 [ -d "$HF" ] || { echo "FATAL: HF cache $HF not found (pass --hf, or pre-download the weights)" >&2; exit 1; }

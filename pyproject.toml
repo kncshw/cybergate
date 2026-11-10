@@ -19,7 +19,7 @@ classifiers = ["License :: OSI Approved :: MIT License"]
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+test = ["pytest>=7", "jinja2>=3.1"]
 
 [project.entry-points."vllm.general_plugins"]
 # Invoked in BOTH the API-server and model-worker processes. See docs/PROCESS_TOPOLOGY.md.

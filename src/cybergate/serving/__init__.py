@@ -5,10 +5,10 @@ orchestration they share, and `prompts` the prompt-building facade.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from .client import CyberGateVLLMClient
-from .middleware import CyberGateThinkMiddleware
 from .prompts import build_raw_prompt_for_model, detect_model_family
-from .proxy import start_background_proxy_server, stop_background_proxy_server
 
 __all__ = [
     "CyberGateThinkMiddleware",
@@ -18,3 +18,15 @@ __all__ = [
     "start_background_proxy_server",
     "stop_background_proxy_server",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "CyberGateThinkMiddleware":
+        from .middleware import CyberGateThinkMiddleware
+
+        return CyberGateThinkMiddleware
+    if name in ("start_background_proxy_server", "stop_background_proxy_server"):
+        from . import proxy as _proxy
+
+        return getattr(_proxy, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

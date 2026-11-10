@@ -1,8 +1,16 @@
 {#
-  Template: Google Gemma 4 Canonical Chat Template (with CyberGate open-think prefix hook)
-  Author: Google Gemma Engineering Team
-  Published: 2026-07-09
-  Context: Fixed tool-calling loops, turn closures, and thinking content-ordering.
+  Template: Google Gemma 4 Chat Template (OpenAI tool-loop fixes + CyberGate open-think prefix hook)
+  Base: Google Gemma 4 tokenizer_config chat_template (2026-07-09)
+  Changes from stock HF template:
+    1. Added `cybergate_open_think_prefix` (`cg_prefix`) and `cybergate_default_system_prompt` (`cg_sys`)
+       hooks for native `/v1/chat/completions` closed-loop CoT steering.
+    2. Emits assistant text content before `<|tool_call>` blocks and omits `<turn|>` after a trailing
+       `<|tool_response>` block so multi-step OpenAI `role: "tool"` loops continue inside the open
+       `model` turn rather than starting without a turn header.
+    3. Fixes `format_function_declaration` brace balance on tool `response` schemas (both `OBJECT` and
+       non-`OBJECT` types) so `{` and `}` match cleanly.
+    4. Adds `and tool_body is not mapping` to `role: "tool"` rendering so `dict` tool outputs format as
+       `response:name{...}` rather than matching Jinja2's `is sequence` branch.
 #}
 {%- macro format_parameters(properties, required, filter_keys=false) -%}
     {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
@@ -113,10 +121,11 @@
         {%- set response_declaration = tool_data['function']['response'] -%}
         ,response:{
         {%- if response_declaration['description'] -%}
-            description:<|"|>{{- response_declaration['description'] -}}<|"|>,
+            description:<|"|>{{- response_declaration['description'] -}}<|"|>
+            {%- if response_declaration['type'] -%},{%- endif -%}
         {%- endif -%}
-        {%- if response_declaration['type'] | upper == 'OBJECT' -%}
-            type:<|"|>{{- response_declaration['type'] | upper -}}<|"|>}
+        {%- if response_declaration['type'] -%}
+            type:<|"|>{{- response_declaration['type'] | upper -}}<|"|>
         {%- endif -%}
         }
     {%- endif -%}
@@ -184,8 +193,8 @@
 {#- ===== SETUP ===== -#}
 {%- set ns = namespace(prev_message_type=None, prev_non_tool_role=None) -%}
 {%- set loop_messages = messages -%}
-{%- set cg_prefix = cybergate_open_think_prefix if (cybergate_open_think_prefix is defined and cybergate_open_think_prefix) else (chat_template_kwargs.get('cybergate_open_think_prefix') if (chat_template_kwargs is defined and chat_template_kwargs is mapping) else None) -%}
-{%- set cg_sys = cybergate_default_system_prompt if (cybergate_default_system_prompt is defined and cybergate_default_system_prompt) else (chat_template_kwargs.get('cybergate_default_system_prompt') if (chat_template_kwargs is defined and chat_template_kwargs is mapping) else None) -%}
+{%- set cg_prefix = cybergate_open_think_prefix if (cybergate_open_think_prefix is defined and cybergate_open_think_prefix) else None -%}
+{%- set cg_sys = cybergate_default_system_prompt if (cybergate_default_system_prompt is defined and cybergate_default_system_prompt) else None -%}
 {%- set enable_thinking = enable_thinking | default(false) -%}
 {%- set preserve_thinking = preserve_thinking | default(false) -%}
 {%- set use_think_flag = enable_thinking or (cg_prefix is not none and cg_prefix != '') -%}
@@ -275,7 +284,6 @@
             {%- endset -%}
 
             {{- captured_content -}}
-            {%- set has_content = captured_content | trim | length > 0 -%}
 
             {%- if message.get('tool_calls') -%}
                 {%- for tool_call in message.get('tool_calls') -%}
@@ -329,7 +337,7 @@
                         {%- set tool_body = follow.get('content') -%}
                         {%- if tool_body is string -%}
                             {{- format_tool_response_block(ns_tname.name, tool_body) -}}
-                        {%- elif tool_body is sequence and tool_body is not string -%}
+                        {%- elif tool_body is sequence and tool_body is not string and tool_body is not mapping -%}
                             {%- set ns_txt = namespace(s='') -%}
                             {%- for part in tool_body -%}
                                 {%- if part.get('type') == 'text' -%}

@@ -236,12 +236,12 @@ else
 fi
 
 : "${PARSER:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("reasoning_parser") or "")' "$MANIFEST")}"
-TOOL_PARSER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("tool_call_parser") or "")' "$MANIFEST")
-CHAT_TPL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("chat_template") or "")' "$MANIFEST")
+: "${TOOL_PARSER:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("tool_call_parser") or "")' "$MANIFEST")}"
+: "${CHAT_TPL:=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m.get("files",{}).get("chat_template") or m.get("serve",{}).get("chat_template") or "")' "$MANIFEST")}"
 : "${OP:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["files"]["operator"])' "$MANIFEST")}"
 : "${REF:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["files"]["refusal_direction"])' "$MANIFEST")}"
 
-for f in "$OP" "$REF"; do
+for f in "$OP" "$REF" ${CHAT_TPL:+"$CHAT_TPL"}; do
   [ -f "$KIT_DIR/$f" ] || { echo "FATAL: missing kit artifact $KIT_DIR/$f" >&2; exit 1; }
 done
 
@@ -385,7 +385,7 @@ export CYBERGATE_PROXY_TRACE_JSONL="$REPO/logs/proxy_trace.jsonl"
 export CYBERGATE_PROXY_DEBUG_LOG="$REPO/logs/proxy_debug.log"
 
 PARSER_ARGS=()
-if [ -n "$CHAT_TPL" ] && [ -f "$KIT_DIR/$CHAT_TPL" ]; then
+if [ -n "$CHAT_TPL" ]; then
   PARSER_ARGS+=(--chat-template "$KIT_DIR/$CHAT_TPL")
 fi
 if [ -n "$PARSER" ]; then

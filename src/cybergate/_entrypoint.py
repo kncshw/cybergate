@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import secrets
 from typing import Any
 
 from .config import env_first
@@ -48,6 +49,13 @@ def register_cybergate_plugin() -> None:
     os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
 
     process_name = multiprocessing.current_process().name
+    if process_name == MAIN_PROCESS_NAME:
+        # Generate a per-server steering secret before vLLM spawns EngineCore so both processes
+        # share it via environment inheritance while external callers cannot forge it. Overwrite an
+        # empty/whitespace `CYBERGATE_STEER_TOKEN=""` so empty env exports never leave the gate open.
+        if not (os.environ.get("CYBERGATE_STEER_TOKEN") or "").strip():
+            os.environ["CYBERGATE_STEER_TOKEN"] = secrets.token_hex(16)
+
     op_path = env_first("CYBERGATE_OP_PATH")
     ref_dir_path = env_first("CYBERGATE_REF_DIR_PATH")
     log_cybergate_event(

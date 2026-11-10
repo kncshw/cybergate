@@ -1201,7 +1201,7 @@ def test_suppressed_opener_still_forces_opener_if_first_visible_token_is_refusal
     (like `<|tool_call>`) passes through untouched, whereas a refusal starter (`"I"`, `"Sorry"`, etc.)
     immediately after the close tag triggers `POST_THINK_OPENER`.
     """
-    refusal_tok = 99
+    refusal_tok = 55
     opener_processor.refusal_start_ids = frozenset({refusal_tok})
 
     output = [20, 21, 22, 23]  # thought_budget == 4

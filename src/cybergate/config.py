@@ -27,6 +27,7 @@ __all__ = [
     "PLUGIN_EVENTS_LOG_PATH",
     "PRECOMPUTED_SCORES_PATH",
     "S_CAT_LAST_PIVOT_FLOOR",
+    "STEER_AUTH_XARG",
     "SUPPRESS_OPENER_XARG",
     "env_first",
 ]
@@ -92,6 +93,12 @@ DEFAULT_MODEL_ID = "google/gemma-4-26B-A4B-it"
 #: controller reads it off `SamplingParams.extra_args` in the engine -- so it lives here rather than
 #: in either of them. See `hooks.cot_controller` for why a tool-bearing turn declines the opener.
 SUPPRESS_OPENER_XARG = "cybergate_suppress_opener"
+
+#: `vllm_xargs` key carrying the per-server steering secret (`CYBERGATE_STEER_TOKEN`). Set by
+#: `register_cybergate_plugin` in `MainProcess` before `EngineCore` spawns, stripped from all
+#: external client payloads by `strip_cybergate_client_kwargs`, and attached only by CyberGate's
+#: steered routes after the activation gate fires.
+STEER_AUTH_XARG = "cybergate_steer_token"
 
 # --- Policy thresholds that are NOT family-specific in the baseline -------------------------------
 #
