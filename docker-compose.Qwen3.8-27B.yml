@@ -47,7 +47,7 @@ services:
       - CYBERGATE_REF_DIR_PATH=/work/cybergate_public/kits/qwen38/qwen38_L43_refusal_dir_vllm.json
       # --- Runtime & Telemetry Logs ---
       - CYBERGATE_IPC_DIR=/dev/shm/cybergate_ipc_qwen38
-      - CYBERGATE_SANITIZE_REASONING=1
+      - CYBERGATE_SANITIZE_REASONING=0
       - CYBERGATE_MAX_MODEL_LEN=${MAX_MODEL_LEN:-262144}
       - CYBERGATE_EVENTS_LOG_PATH=/work/cybergate_public/logs/qwen38_events.log
       - CYBERGATE_PROXY_TRACE_JSONL=/work/cybergate_public/logs/proxy_trace.jsonl
@@ -79,4 +79,8 @@ services:
         --gpu-memory-utilization ${MEM_UTIL:-0.95}
         --enforce-eager
         --enable-prefix-caching
+        --chat-template /work/cybergate_public/kits/qwen38/chat_template.jinja
+        --reasoning-parser qwen3
+        --enable-auto-tool-choice
+        --tool-call-parser qwen3_coder
         --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware

@@ -236,6 +236,8 @@ else
 fi
 
 : "${PARSER:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("reasoning_parser") or "")' "$MANIFEST")}"
+TOOL_PARSER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("tool_call_parser") or "")' "$MANIFEST")
+CHAT_TPL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("chat_template") or "")' "$MANIFEST")
 : "${OP:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["files"]["operator"])' "$MANIFEST")}"
 : "${REF:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["files"]["refusal_direction"])' "$MANIFEST")}"
 
@@ -383,8 +385,14 @@ export CYBERGATE_PROXY_TRACE_JSONL="$REPO/logs/proxy_trace.jsonl"
 export CYBERGATE_PROXY_DEBUG_LOG="$REPO/logs/proxy_debug.log"
 
 PARSER_ARGS=()
+if [ -n "$CHAT_TPL" ] && [ -f "$KIT_DIR/$CHAT_TPL" ]; then
+  PARSER_ARGS+=(--chat-template "$KIT_DIR/$CHAT_TPL")
+fi
 if [ -n "$PARSER" ]; then
-  PARSER_ARGS=(--reasoning-parser "$PARSER")
+  PARSER_ARGS+=(--reasoning-parser "$PARSER")
+fi
+if [ -n "$TOOL_PARSER" ]; then
+  PARSER_ARGS+=(--enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER")
 fi
 
 read -r -a EXTRA_SERVE_ARGS <<< "$MODEL_SERVE_FLAGS"

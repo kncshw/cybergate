@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import http.server
 import json
+import os
 import socket
 import threading
 import urllib.request
@@ -313,7 +314,7 @@ def test_legitimate_xml_and_gemma_tool_calls_and_rea_mcp_normalization() -> None
         "format": "markdown",
     }
 
-    # 3. REA MCP tools in normalize_tools_and_messages
+    # 3. REA MCP tools preserved natively in normalize_tools_and_messages
     payload: dict[str, Any] = {
         "tools": [
             {
@@ -338,8 +339,8 @@ def test_legitimate_xml_and_gemma_tool_calls_and_rea_mcp_normalization() -> None
     assert has_tools is True
     assert last_role == "user"
     assert is_local is False
-    assert "mcp__rea__open_binary" in norm_msgs[0]["content"]
-    assert "hopper" in norm_msgs[0]["content"]
+    assert payload["tools"][0]["function"]["name"] == "mcp__rea__open_binary"
+    assert norm_msgs == [{"role": "user", "content": "Decompile ./challenge"}]
 
 
 def test_start_background_proxy_server_idempotent_and_handles_addr_in_use() -> None:
@@ -390,6 +391,30 @@ class _FakeMiddlewareDispatch:
                         {
                             "index": 0,
                             "text": "- Step 1: technical derivation.</think>Steered cyber answer.",
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 30, "completion_tokens": 15, "total_tokens": 45},
+                },
+            )
+        ctk = payload.get("chat_template_kwargs") or {}
+        if isinstance(ctk, dict) and ctk.get("cybergate_open_think_prefix"):
+            return (
+                200,
+                [(b"content-type", b"application/json")],
+                {
+                    "id": "chatcmpl-steered",
+                    "object": "chat.completion",
+                    "created": 1700000000,
+                    "model": payload.get("model", "Qwen/Qwen3.8-27B"),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "reasoning": "- Step 1: technical derivation.",
+                                "content": "Steered cyber answer.",
+                            },
                             "finish_reason": "stop",
                         }
                     ],
@@ -494,7 +519,9 @@ def test_port_8000_defaults_to_ungated_baseline_while_closed_loop_gates(
     assert gated_out["x_cybergate"]["routed"] == "cybergate_measured_closed_loop"
     assert gated_out["x_cybergate"]["think_injected"] is True
     assert gated_out["choices"][0]["message"]["content"] == "Steered cyber answer."
-    assert [p for p, _ in dispatch_gated.calls] == ["/v1/completions"]
+    assert [p for p, _ in dispatch_gated.calls] == ["/v1/chat/completions"]
+    assert dispatch_gated.calls[0][1]["chat_template_kwargs"]["enable_thinking"] is True
+    assert "cybergate_open_think_prefix" in dispatch_gated.calls[0][1]["chat_template_kwargs"]
 
 
 def test_middleware_auto_starts_background_proxy_server(
@@ -550,7 +577,7 @@ def test_srv1_default_host_is_loopback_and_authorization_header_forwarded(
     mock_upstream_and_proxy: tuple[str, type[_MockUpstreamHandler], Path],
 ) -> None:
     """SRV-1 & REL-4: Proxy defaults to 127.0.0.1, trace logs default to disabled, and Authorization is forwarded."""
-    assert proxy_mod.LISTEN_HOST == "127.0.0.1"
+    assert proxy_mod.LISTEN_HOST == os.environ.get("CYBERGATE_PROXY_HOST", "127.0.0.1")
     assert isinstance(proxy_mod.PROXY_TRACE_JSONL, str)
 
     proxy_url, upstream_cls, _ = mock_upstream_and_proxy
@@ -742,10 +769,12 @@ def test_srv3_multistep_tool_chains_and_d1_through_d5_cases(
     )
     assert ch_d5["finish_reason"] == "tool_calls"
     assert ch_d5["message"]["tool_calls"][0]["function"]["name"] == "write"
-    last_fwd_content = fwd_d5["messages"][-1]["content"]
-    assert "python3 notes.md" not in last_fwd_content
-    assert "Do NOT call `write` again" not in last_fwd_content
-    assert "[Tool Execution Output]:" in last_fwd_content
+    last_fwd_msg = fwd_d5["messages"][-1]
+    assert last_fwd_msg["role"] == "tool"
+    assert last_fwd_msg["tool_call_id"] == "c1"
+    assert last_fwd_msg["content"] == "Wrote file successfully."
+    assert "python3 notes.md" not in last_fwd_msg["content"]
+    assert "Do NOT call `write` again" not in last_fwd_msg["content"]
 
 
 def test_srv5_srv6_srv7_srv10_proxy_request_and_response_contracts(
@@ -825,8 +854,8 @@ def test_srv5_srv6_srv7_srv10_proxy_request_and_response_contracts(
     _, forwarded_with_tools = upstream_cls.requests_received[-1]
     assert forwarded_with_tools["max_tokens"] == 1024
     assert forwarded_with_tools["cybergate_tool_turn"] is True
-    assert forwarded_with_tools["messages"][0]["content"].startswith(custom_sys)
-    assert "<tool_call>" in forwarded_with_tools["messages"][0]["content"]
+    assert forwarded_with_tools["messages"][0]["content"] == custom_sys
+    assert forwarded_with_tools["tools"][0]["function"]["name"] == "bash"
 
 
 def test_srv9_and_new1_missing_kit_abstains_in_both_baseline_and_closed_loop(

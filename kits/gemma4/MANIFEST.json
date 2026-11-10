@@ -15,6 +15,7 @@
     "refusal_direction": "gemma4_L21_refusal_dir.json",
     "candidate_bundle": "gemma4_candidate_ops_bundle.json",
     "canaries": "canaries.json",
+    "chat_template": "chat_template.jinja",
     "alternates": {
       "gemma4_ruleC_serve.json": "Multi-probe category factor (rule C): fires on L21 last OR L20 last. Measured live at 626/675 CySec and 24/234 CatQA, against this kit's 558/23. NOT the default -- it was served, measured and rolled back. Kept here because it is reproducible, and it resolves the candidate bundle from this directory, same as the default operator."
     }
@@ -132,7 +133,9 @@
     "THE BOUNDED `suffix_len <= 12` RULE HAS NO LOWER BOUND, AND THE MARGIN IS ONE CONSTANT. Measured 2026-11-03: the shortest Pass-2 render reachable through the shipped routes is closed_loop_step1 / sandwich_step1 at 81 tokens, i.e. 69 tokens of margin above the ceiling. That 81 decomposes as 5 for the turn header, 3 for thought_open and 73 for OPEN_THINK_PREFIX, so the entire margin rests on the token length of one constant in cybergate/boilerplate.py; shorten it below roughly 5 tokens and the step1 renders begin publishing with nothing else changing. Separately, build_raw_prompt sets `rubric = FAKE_THINK_RUBRIC if custom_think_text is None else custom_think_text` (families/base.py:446), so passing an EMPTY STRING erases the 110-token rubric and collapses preclosed / preclosed_no_opener from 134 to 9 -- exactly the observation's suffix length, which publishes. Not reachable from the serving path, which never passes custom_think_text to those modes (think_routes.py:252 passes only post_think_opener), but reachable through the public build_raw_prompt_for_model(..., mode='preclosed', custom_think_text=''). An exact-membership rule would not have this failure mode."
   ],
   "serve": {
-    "reasoning_parser": null,
-    "reasoning_parser_note": "Passed to vllm as --reasoning-parser. null means the model needs none."
+    "chat_template": "chat_template.jinja",
+    "reasoning_parser": "gemma4",
+    "tool_call_parser": "gemma4",
+    "reasoning_parser_note": "Passed to vllm as --reasoning-parser gemma4 --enable-auto-tool-choice --tool-call-parser gemma4 with --chat-template chat_template.jinja."
   }
 }

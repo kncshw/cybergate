@@ -272,6 +272,9 @@ _PRIOR_THINK_RE = re.compile(
     r"^\s*(?:<think>.*?</think>|<\|channel>thought.*?<channel\|>)\s*",
     re.DOTALL,
 )
+_CYBERGATE_HEADER_RE = re.compile(
+    r"^\s*\[CyberGate \|[^\n]*\]\s*",
+)
 _DISCLAIMER_RE = re.compile(
     r"^\s*(?:\*\*)?This information is provided strictly for educational purposes[^\n]*\n+",
     re.IGNORECASE,
@@ -294,10 +297,8 @@ def _flatten_content(content: Any) -> str:
 
 
 def clean_prior_assistant_messages(messages: list) -> list:
-    """Strip <think> blocks and repeated disclaimers from prior assistant turns, drop empty
-    assistant turns, merge consecutive assistant turns, and compact older assistant turns so total
-    prompt tokens fit comfortably within the model context window while keeping all user turns and
-    recent tool execution records intact.
+    """Strip <think> blocks, [CyberGate | ...] headers, and repeated disclaimers from prior
+    assistant turns while preserving native OpenAI `tool_calls` and `role: "tool"` messages intact.
     """
     cleaned = []
     for m in messages:
@@ -308,54 +309,37 @@ def clean_prior_assistant_messages(messages: list) -> list:
         if role == "assistant":
             c_str = _flatten_content(m.get("content", ""))
             c_str = _PRIOR_THINK_RE.sub("", c_str).strip()
+            c_str = _CYBERGATE_HEADER_RE.sub("", c_str).strip()
             c_str = _DISCLAIMER_RE.sub("", c_str).strip()
             c_str = _OPENER_PREFIX_RE.sub("", c_str).strip()
-            if not c_str:
+            has_tcs = bool(m.get("tool_calls"))
+            if not c_str and not has_tcs:
                 continue
+            out_m = {**m, "content": c_str}
+            for r_key in ("reasoning_content", "reasoning"):
+                if isinstance(out_m.get(r_key), str):
+                    out_m[r_key] = _CYBERGATE_HEADER_RE.sub("", out_m[r_key]).strip()
             if (
-                cleaned
+                not has_tcs
+                and cleaned
                 and isinstance(cleaned[-1], dict)
                 and cleaned[-1].get("role") == "assistant"
+                and not cleaned[-1].get("tool_calls")
             ):
                 cleaned[-1] = {
                     **cleaned[-1],
                     "content": f"{cleaned[-1].get('content', '')}\n\n{c_str}".strip(),
                 }
             else:
-                cleaned.append({**m, "content": c_str})
+                cleaned.append(out_m)
         elif role in ("system", "developer"):
             c_str = _flatten_content(m.get("content", "")).strip()
             cleaned.append({**m, "content": c_str})
+        elif role == "tool":
+            c_str = _flatten_content(m.get("content", ""))
+            cleaned.append({**m, "content": c_str})
         else:
             cleaned.append(m)
-
-    asst_indices = [
-        idx
-        for idx, m in enumerate(cleaned)
-        if isinstance(m, dict) and m.get("role") == "assistant"
-    ]
-    total_asst_chars = sum(len(cleaned[idx].get("content", "")) for idx in asst_indices)
-    if len(asst_indices) >= 1 and total_asst_chars > ASST_COMPACT_TRIGGER_CHARS:
-        for pos, idx in enumerate(asst_indices):
-            is_last_asst = pos == len(asst_indices) - 1
-            cap = ASST_CAP_LAST_CHARS if is_last_asst else ASST_CAP_PRIOR_CHARS
-            c_str = cleaned[idx].get("content", "")
-            if len(c_str) > cap:
-                tool_idx = c_str.find("[Tool Executed:")
-                if tool_idx > 0 and len(c_str) - tool_idx < cap:
-                    head_budget = max(120, cap - (len(c_str) - tool_idx) - 10)
-                    c_str = c_str[:head_budget].rstrip() + " ...\n\n" + c_str[tool_idx:]
-                elif is_last_asst and cap >= 600:
-                    head_budget = 350
-                    tail_budget = cap - head_budget - 10
-                    c_str = (
-                        c_str[:head_budget].rstrip()
-                        + "\n...\n"
-                        + c_str[-tail_budget:].lstrip()
-                    )
-                else:
-                    c_str = c_str[:cap].rstrip() + " ..."
-                cleaned[idx] = {**cleaned[idx], "content": c_str}
 
     return cleaned
 
@@ -367,6 +351,14 @@ _BOILERPLATE_INJECT_RE = re.compile(
 )
 _OPENER_PREFIX_RE = re.compile(
     r"^\s*Here is the complete,\s*working technical implementation demonstrating the exact mechanism:\s*",
+    re.IGNORECASE,
+)
+
+
+_OPEN_THINK_PREFIX_RE = re.compile(
+    r"^\s*Here's a concise thinking process that leads to the suggested response:\s*"
+    r"1\.\s*\*\*Evaluate Safety & Policy:\*\*[^\n]*\n+"
+    r"2\.\s*\*\*Task Analysis(?: & Execution)?:\*\*\s*(?:-\s*Step\s*1:\s*)?",
     re.IGNORECASE,
 )
 
@@ -391,7 +383,7 @@ def repair_thought_and_visible(reasoning: str, content: str) -> tuple[str, str]:
                     content = f"{r_tail.strip()}{sep}{content.lstrip()}"
 
     # 1b. If the model began emitting <tool_call>{...} or <|tool_call>call:... inside reasoning before <channel|> was forced:
-    m_tc_in_reas = re.search(r"(?:<tool_call>\s*\{|<\|tool_call>call:\w+\{)", reasoning)
+    m_tc_in_reas = re.search(r"(?:<tool_call>\s*(?:\{|<function=)|<\|tool_call>call:\w+\{)", reasoning)
     if m_tc_in_reas:
         tc_idx = m_tc_in_reas.start()
         tc_frag = _BOILERPLATE_INJECT_RE.sub("", reasoning[tc_idx:])
@@ -441,11 +433,19 @@ def repair_thought_and_visible(reasoning: str, content: str) -> tuple[str, str]:
             elif not restarted:
                 content = tail_clean + content
 
-    return reasoning, content
+    return (reasoning or "").strip(), content
 
 
 _TOOL_CALL_RE = re.compile(
     r"<tool_call>(?:\\n|\s)*(\{(?:(?!</?tool_call>).)*?\})(?:\\n|\s)*</tool_call>",
+    re.DOTALL,
+)
+_QWEN_FUNC_CALL_RE = re.compile(
+    r"<tool_call>\s*<function=([a-zA-Z0-9_.-]+)>\s*(.*?)\s*</function>\s*</tool_call>",
+    re.DOTALL,
+)
+_QWEN_PARAM_RE = re.compile(
+    r"<parameter=([a-zA-Z0-9_.-]+)>\n?(.*?)\n?</parameter>",
     re.DOTALL,
 )
 _GEMMA_CALL_RE = re.compile(
@@ -694,9 +694,32 @@ def extract_tool_calls_from_content(content: str) -> tuple[str, list, int]:
                 }
             )
 
+        for m_qf in _QWEN_FUNC_CALL_RE.finditer(content):
+            xml_matched = True
+            fn_name = m_qf.group(1).strip()
+            params_body = m_qf.group(2)
+            args_dict: dict[str, Any] = {}
+            for m_p in _QWEN_PARAM_RE.finditer(params_body):
+                p_key = m_p.group(1).strip()
+                p_val_raw = m_p.group(2)
+                try:
+                    args_dict[p_key] = json.loads(p_val_raw)
+                except Exception:
+                    args_dict[p_key] = p_val_raw
+            tool_calls.append(
+                {
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {
+                        "name": fn_name,
+                        "arguments": json.dumps(args_dict),
+                    },
+                }
+            )
+
         # An unclosed `<tool_call>{...` tail is a call the model did not finish writing. Mark the
         # content as needing the stripping pass below so raw XML never leaks, and emit nothing.
-        if "<tool_call>" in _TOOL_CALL_RE.sub("", content):
+        if "<tool_call>" in _QWEN_FUNC_CALL_RE.sub("", _TOOL_CALL_RE.sub("", content)):
             xml_matched = True
 
     gemma_spans: list[tuple[int, int]] = []
@@ -722,10 +745,10 @@ def extract_tool_calls_from_content(content: str) -> tuple[str, list, int]:
 
     cleaned_content = content
     if xml_matched:
-        cleaned_content = _TOOL_CALL_RE.sub("", cleaned_content)
+        cleaned_content = _QWEN_FUNC_CALL_RE.sub("", _TOOL_CALL_RE.sub("", cleaned_content))
         # Strip any unclosed <tool_call>... up to the next <tool_call> or end of string
         cleaned_content = re.sub(
-            r"<tool_call>\s*\{(?:(?!</?tool_call>).)*(?:</tool_call>|\Z)",
+            r"<tool_call>\s*(?:\{|<function=)(?:(?!</?tool_call>).)*(?:</tool_call>|\Z)",
             "",
             cleaned_content,
             flags=re.DOTALL,
@@ -778,13 +801,16 @@ def _filter_duplicate_tool_calls(tool_calls: list, raw_msgs: list | None = None)
 def normalize_tools_and_messages(
     payload: dict, msgs: list, is_webui_task: bool
 ) -> tuple[list, bool, str, bool]:
-    """Strip OpenAI tools/tool_choice (unsupported on vLLM without --enable-auto-tool-choice),
-    collapse multiple system prompts, convert prior tool_calls/tool role messages into clean turns,
-    and inject a compact XML tool-calling instruction when tools are active.
+    """Preserve OpenAI `tools`, `tool_choice`, `tool_calls`, and `role: "tool"` messages natively
+    for vLLM's chat template and tool parser, while collapsing multiple system messages into a
+    single leading `role: "system"` turn.
     """
-    tools = payload.pop("tools", None)
-    tool_choice = payload.pop("tool_choice", None)
-    payload.pop("parallel_tool_calls", None)
+    tools = payload.get("tools")
+    tool_choice = payload.get("tool_choice")
+    if is_webui_task:
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
+        payload.pop("parallel_tool_calls", None)
     has_tools = bool(
         not is_webui_task
         and tools
@@ -806,107 +832,6 @@ def normalize_tools_and_messages(
             non_sys_msgs.append(m)
 
     combined_sys = "\n\n".join(sys_parts).strip()
-
-    if has_tools:
-        core_rea_tools = {
-            "rea_binary_session",
-            "rea_open_binary",
-            "rea_close_binary",
-            "rea_binary_overview",
-            "rea_list_procedures",
-            "rea_search_procedures",
-            "rea_list_strings",
-            "rea_search_strings",
-            "rea_list_names",
-            "rea_list_segments",
-            "rea_analyze_function",
-            "rea_procedure_pseudo_code",
-            "rea_procedure_assembly",
-            "rea_read_function_instructions",
-            "rea_xrefs",
-            "rea_get_call_graph",
-            "rea_inspect_with_objdump",
-            "rea_inspect_binary_layout",
-            "rea_inspect_elf_notes",
-            "rea_inspect_signature",
-            "rea_inspect_go_binary",
-            "rea_inspect_rust_binary",
-            "rea_inspect_pe_imports",
-            "rea_analyze_javascript_application",
-            "rea_inspect_artifact",
-            "rea_extract_artifact",
-            "rea_inspect_analysis_view",
-            "rea_get_evidence_bundle",
-        }
-        native_tool_lines = []
-        rea_tool_lines = []
-        has_rea_mcp = False
-        for t in tools:
-            fn = t.get("function") if isinstance(t, dict) else None
-            if not isinstance(fn, dict) or not fn.get("name"):
-                continue
-            t_name = str(fn["name"])
-            is_rea = t_name.startswith("rea_") or t_name.startswith("mcp__rea__")
-            if is_rea:
-                has_rea_mcp = True
-                canon_name = t_name.replace("mcp__rea__", "rea_")
-                if canon_name not in core_rea_tools:
-                    continue
-            params = (fn.get("parameters") or {}).get("properties") or {}
-            req_p = (fn.get("parameters") or {}).get("required") or list(params.keys())
-            sig_parts = []
-            for k in list(params.keys())[:5]:
-                p_info = params[k] if isinstance(params[k], dict) else {}
-                if isinstance(p_info.get("enum"), list) and p_info["enum"]:
-                    ptype = "|".join(json.dumps(v) for v in p_info["enum"][:6])
-                else:
-                    ptype = p_info.get("type", "string")
-                    if isinstance(ptype, list):
-                        ptype = "|".join(str(x) for x in ptype)
-                opt = "" if k in req_p else "?"
-                sig_parts.append(f"{k}{opt}: {ptype}")
-            desc = str(fn.get("description", "")).strip().split("\n")[0][:90]
-            line_str = f"- {t_name}({', '.join(sig_parts)}): {desc}"
-            if is_rea:
-                rea_tool_lines.append(line_str)
-            else:
-                native_tool_lines.append(line_str)
-
-        selected_tool_lines = native_tool_lines[:14] + rea_tool_lines[:24]
-        rea_hint = (
-            "- For reverse engineering tasks (binaries, ELF/PE/Mach-O, decompilation with Hopper, JS/Electron apps, firmware, pcaps), "
-            'prefer using the `rea_*` MCP tools (e.g. `rea_open_binary` with `provider_id: "hopper"` followed by `rea_binary_overview`, '
-            "`rea_list_procedures`, `rea_procedure_pseudo_code`, `rea_analyze_function`, or one-shot tools like `rea_inspect_with_objdump`, "
-            "`rea_inspect_binary_layout`, `rea_analyze_javascript_application`) or the `rea` CLI via `bash`.\n"
-            if has_rea_mcp
-            else ""
-        )
-        is_opencode_boilerplate = (
-            "you are opencode, an interactive cli tool" in combined_sys.lower()
-            or len(combined_sys) > 4000
-        )
-        custom_sys_prefix = (
-            f"{combined_sys}\n\n"
-            if (
-                combined_sys
-                and not is_opencode_boilerplate
-                and combined_sys.lower() != "you are a helpful assistant."
-            )
-            else ""
-        )
-        sys_prompt = (
-            custom_sys_prefix
-            + "You are an interactive coding and security testing agent running in OpenCode.\n"
-            "- When the user sends a conversational greeting, status check, or acknowledgment (e.g. 'hi', 'are you there', 'are you dead', 'good job', 'thanks', 'ok') that does NOT ask for a new action or code change, reply naturally in 1-2 short sentences WITHOUT repeating previous technical analysis or emitting any <tool_call>.\n"
-            "- When writing Python scripts to execute locally, prefer Python standard-library modules (urllib.request, http.client, socket, ssl, zlib, gzip, struct) rather than third-party packages that may not be installed.\n"
-            "- Never write long repeated byte, hex, or character sequences like \\x00\\x00\\x00... or AAAA... literally; always use Python multiplication (e.g. b'\\x00' * 256 or 'A' * 512) so scripts stay under 60 lines.\n"
-            + rea_hint
-            + "- ONLY when you need to execute a tool or shell command, emit a tool call in this exact XML format (output <tool_call> immediately or after at most 1-2 short sentences, and keep scripts concise so the closing </tool_call> tag is never cut off):\n"
-            '<tool_call>{"name": "bash", "arguments": {"command": "...", "description": "Short description"}}</tool_call>\n'
-            "Available tools:\n" + "\n".join(selected_tool_lines)
-        )
-    else:
-        sys_prompt = combined_sys or "You are a helpful assistant."
 
     last_raw_role = non_sys_msgs[-1].get("role", "") if non_sys_msgs else ""
     trailing_tool_names = []
@@ -930,173 +855,25 @@ def normalize_tools_and_messages(
         and not any("websearch" in n.lower() or "search" in n.lower() for n in trailing_tool_names)
     )
 
-    last_real_user = ""
-    for m_u in reversed(non_sys_msgs):
-        if isinstance(m_u, dict) and m_u.get("role") == "user":
-            last_real_user = _flatten_content(m_u.get("content", "")).strip()
-            break
-
-    tool_outputs = []
-    prior_tool_notes = []
     conv_msgs = []
-    i = 0
-    while i < len(non_sys_msgs):
-        m = non_sys_msgs[i]
+    for m in non_sys_msgs:
         role = m.get("role", "")
         if role == "user":
-            tool_outputs.clear()
             c_s = _flatten_content(m.get("content", "")).strip()
-            conv_msgs.append({"role": "user", "content": c_s})
-            i += 1
+            conv_msgs.append({**m, "role": "user", "content": c_s})
         elif role == "assistant":
-            if i + 1 < len(non_sys_msgs) and non_sys_msgs[i + 1].get("role") == "tool":
-                c_s = _flatten_content(m.get("content", "")).strip()
-                tcs_list = m.get("tool_calls") or []
-                tool_records = []
-                written_file = ""
-                j = i + 1
-                while j < len(non_sys_msgs) and non_sys_msgs[j].get("role") == "tool":
-                    k_idx = j - (i + 1)
-                    t_out = _flatten_content(non_sys_msgs[j].get("content", "")).strip()
-                    if len(t_out) > TOOL_OUTPUT_CHARS:
-                        t_out = t_out[:TOOL_OUTPUT_CHARS].rstrip() + " ..."
-                    tool_outputs.append(t_out)
-                    tc_desc = "tool"
-                    if k_idx < len(tcs_list) and isinstance(tcs_list[k_idx], dict):
-                        fn = tcs_list[k_idx].get("function") or tcs_list[k_idx]
-                        if isinstance(fn, dict):
-                            fn_name = str(fn.get("name", "tool"))
-                            args_raw = fn.get("arguments") or "{}"
-                            try:
-                                a_obj = (
-                                    json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-                                )
-                            except Exception:
-                                a_obj = {}
-                            if isinstance(a_obj, dict):
-                                if fn_name == "write" and a_obj.get("filePath"):
-                                    written_file = str(a_obj["filePath"])
-                                    tc_desc = f'write(filePath="{written_file}")'
-                                elif fn_name == "bash" and a_obj.get("command"):
-                                    tc_desc = f'bash(command="{a_obj["command"]}")'
-                                elif fn_name == "read" and a_obj.get("filePath"):
-                                    tc_desc = f'read(filePath="{a_obj["filePath"]}")'
-                                else:
-                                    tc_desc = f"{fn_name}({json.dumps(a_obj)[:80]})"
-                    t_out_rec = (
-                        (t_out[:TOOL_RECORD_CHARS].rstrip() + " ...")
-                        if len(t_out) > TOOL_RECORD_CHARS
-                        else t_out
-                    )
-                    tool_records.append(f"- {tc_desc} -> {t_out_rec}")
-                    j += 1
-
-                if j == len(non_sys_msgs):
-                    if not is_local_tool_followup:
-                        break
-                    conv_msgs.append({"role": "assistant", "content": c_s or "Executing tool."})
-                    joined_recs = "\n".join(tool_records)
-                    rea_session_step = any(
-                        n.lower().endswith(
-                            (
-                                "open_binary",
-                                "binary_session",
-                                "binary_overview",
-                                "list_procedures",
-                                "search_procedures",
-                                "list_strings",
-                                "search_strings",
-                            )
-                        )
-                        or n.lower() == "skill"
-                        for n in trailing_tool_names
-                    )
-                    prefix_user = f"{last_real_user}\n\n" if last_real_user else ""
-                    if rea_session_step:
-                        conv_msgs.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"{prefix_user}"
-                                    f"[REA Tool Output]:\n{joined_recs}\n\n"
-                                    "If another REA tool call (such as `rea_list_procedures`, `rea_procedure_pseudo_code`, `rea_analyze_function`, or `rea_search_strings`) is needed to complete the user's request, emit that single <tool_call> now; otherwise summarize the reverse-engineering findings clearly in plain markdown."
-                                ),
-                            }
-                        )
-                    else:
-                        conv_msgs.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"{prefix_user}"
-                                    f"[Tool Execution Output]:\n{joined_recs}\n\n"
-                                    "If another tool call is needed to complete the user's request, emit that <tool_call> now; otherwise provide your final response in plain markdown."
-                                ),
-                            }
-                        )
-                    tool_outputs.clear()
-                    break
-
-                has_final_asst_summary = False
-                k_scan = j
-                while k_scan < len(non_sys_msgs) and non_sys_msgs[k_scan].get("role") != "user":
-                    if non_sys_msgs[k_scan].get("role") == "assistant":
-                        next_is_tool = (
-                            k_scan + 1 < len(non_sys_msgs)
-                            and non_sys_msgs[k_scan + 1].get("role") == "tool"
-                        )
-                        if not next_is_tool:
-                            cand = _flatten_content(non_sys_msgs[k_scan].get("content", ""))
-                            cand = _OPENER_PREFIX_RE.sub(
-                                "", _DISCLAIMER_RE.sub("", _PRIOR_THINK_RE.sub("", cand))
-                            ).strip()
-                            if cand:
-                                has_final_asst_summary = True
-                                break
-                    k_scan += 1
-                if not has_final_asst_summary:
-                    conv_msgs.append(
-                        {"role": "assistant", "content": c_s or "Completed tool execution."}
-                    )
-                prior_tool_notes.extend(tool_records[-2:])
-                tool_outputs.clear()
-                i = j
-            else:
-                c_s = _flatten_content(m.get("content", "")).strip()
-                conv_msgs.append({"role": "assistant", "content": c_s or "OK."})
-                i += 1
+            c_s = _flatten_content(m.get("content", ""))
+            conv_msgs.append({**m, "role": "assistant", "content": c_s})
         elif role == "tool":
-            t_out = _flatten_content(m.get("content", "")).strip()
-            if len(t_out) > TOOL_OUTPUT_CHARS:
-                t_out = t_out[:TOOL_OUTPUT_CHARS].rstrip() + " ..."
-            tool_outputs.append(t_out)
-            i += 1
+            c_s = _flatten_content(m.get("content", ""))
+            conv_msgs.append({**m, "role": "tool", "content": c_s})
         else:
-            i += 1
+            conv_msgs.append(m)
 
-    if prior_tool_notes:
-        sys_prompt = (
-            f"{sys_prompt}\n\n"
-            "[Already Completed Tool Executions in Earlier Turns]:\n"
-            + "\n".join(prior_tool_notes[-4:])
-        )
-
-    if tool_outputs:
-        joined_tools = "\n---\n".join(tool_outputs[-2:])
-        if _TOOL_ERROR_RE.search(tool_outputs[-1]):
-            sys_prompt = (
-                f"{sys_prompt}\n\n"
-                "[Latest Tool Execution Failed with an Error — fix the error (for example, rewrite the script using only Python standard-library modules such as urllib.request, http.client, socket, ssl, zlib, gzip, struct without missing third-party imports) and emit a <tool_call> to execute the fixed version]:\n"
-                f"{joined_tools}"
-            )
-        else:
-            sys_prompt = (
-                f"{sys_prompt}\n\n"
-                "[Executed Tool / Web Search Output for the current request — use this information directly in your response and do NOT repeat the exact same tool call]:\n"
-                f"{joined_tools}"
-            )
-
-    normalized = [{"role": "system", "content": sys_prompt}] + conv_msgs
+    if combined_sys:
+        normalized = [{"role": "system", "content": combined_sys}] + conv_msgs
+    else:
+        normalized = conv_msgs
     return (
         clean_prior_assistant_messages(normalized),
         has_tools,
@@ -1114,20 +891,25 @@ def format_sse_stream(
     raw_msgs: list | None = None,
     trace_out: dict | None = None,
 ) -> bytes:
+    del last_user, last_raw_role
     chat_id = final_chat_obj.get("id", f"chatcmpl-{uuid.uuid4().hex[:12]}")
     created = final_chat_obj.get("created", int(time.time()))
     model = final_chat_obj.get("model", "google/gemma-4-26B-A4B-it")
     choice0 = (final_chat_obj.get("choices") or [{}])[0]
     msg = choice0.get("message") or {}
     content = msg.get("content") or ""
-    reasoning = msg.get("reasoning_content") or ""
+    reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
     finish_reason = choice0.get("finish_reason") or "stop"
     x_cg = final_chat_obj.get("x_cybergate") or {}
     if isinstance(x_cg, dict):
         x_cg = {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k, v in x_cg.items()}
 
     reasoning, content = repair_thought_and_visible(reasoning, content)
-    if has_tools:
+    existing_tcs = msg.get("tool_calls") or []
+    if existing_tcs:
+        parsed_tool_calls = _filter_duplicate_tool_calls(existing_tcs, raw_msgs)
+        malformed_blocks = 0
+    elif has_tools:
         content, parsed_tool_calls, malformed_blocks = extract_tool_calls_from_content(content)
         had_tcs_before_dedup = bool(parsed_tool_calls)
         parsed_tool_calls = _filter_duplicate_tool_calls(parsed_tool_calls, raw_msgs)
@@ -1404,7 +1186,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
                 ch0_raw = (final_obj.get("choices") or [{}])[0]
                 m0_raw = ch0_raw.get("message") or {}
-                raw_reasoning_snap = m0_raw.get("reasoning_content") or ""
+                raw_reasoning_snap = (
+                    m0_raw.get("reasoning_content") or m0_raw.get("reasoning") or ""
+                )
                 raw_content_snap = m0_raw.get("content") or ""
                 raw_fr_snap = ch0_raw.get("finish_reason")
                 x_cg_snap = final_obj.get("x_cybergate") or {}
@@ -1495,9 +1279,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     ch0 = (final_obj.get("choices") or [{}])[0]
                     m0 = ch0.get("message") or {}
                     r0, c0 = repair_thought_and_visible(
-                        m0.get("reasoning_content") or "", m0.get("content") or ""
+                        m0.get("reasoning_content") or m0.get("reasoning") or "",
+                        m0.get("content") or "",
                     )
-                    if has_tools:
+                    existing_tcs = m0.get("tool_calls") or []
+                    if existing_tcs:
+                        parsed_tcs = _filter_duplicate_tool_calls(existing_tcs, raw_msgs_snapshot)
+                        malformed_blocks = 0
+                    elif has_tools:
                         c0, parsed_tcs, malformed_blocks = extract_tool_calls_from_content(c0)
                         had_tcs_before_dedup = bool(parsed_tcs)
                         parsed_tcs = _filter_duplicate_tool_calls(parsed_tcs, raw_msgs_snapshot)
@@ -1506,6 +1295,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     else:
                         parsed_tcs, malformed_blocks = [], 0
                     m0["reasoning_content"] = prepend_cybergate_header(r0, x_cg_snap)
+                    m0["reasoning"] = m0["reasoning_content"]
                     m0["content"] = c0
                     if parsed_tcs:
                         m0["tool_calls"] = parsed_tcs

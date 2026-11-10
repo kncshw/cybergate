@@ -1192,3 +1192,37 @@ def test_qwen38_monitors_refusal_during_think_and_injects_inline_steering(
     assert forced == SUPPRESSION_IDS
     assert proc.stats.injections == 1
     assert proc._rows[0].cooldown == proc.config.cooldown_steps
+
+
+def test_suppressed_opener_still_forces_opener_if_first_visible_token_is_refusal_start(
+    opener_processor: RefusalSteeredCoTProcessor,
+) -> None:
+    """When `cybergate_suppress_opener=1` is set on a tool turn, a non-refusal first visible token
+    (like `<|tool_call>`) passes through untouched, whereas a refusal starter (`"I"`, `"Sorry"`, etc.)
+    immediately after the close tag triggers `POST_THINK_OPENER`.
+    """
+    refusal_tok = 99
+    opener_processor.refusal_start_ids = frozenset({refusal_tok})
+
+    output = [20, 21, 22, 23]  # thought_budget == 4
+    opener_processor.update_state(
+        _batch_update(
+            added=[
+                (0, _params(cybergate_suppress_opener=1), _steerable_prompt(), output),
+            ]
+        )
+    )
+    forced_close = [_step(opener_processor).forced_token(0) for _ in range(3)]
+    assert forced_close == [LOCK_IDS[0], CLOSE_TAG_IDS[0], CLOSE_TAG_IDS[1]]
+    assert opener_processor._rows[0].done is True
+    assert opener_processor._rows[0].check_post_close_refusal is True
+
+    # At the first visible token after `<channel|>`, model tries to emit `refusal_tok` ("I")
+    logits_ref = FakeLogits(1)
+    logits_ref[0, refusal_tok] = 8.5
+    opener_processor.apply(logits_ref)
+    assert logits_ref.forced_token(0) == OPENER_IDS[0]
+    assert _step(opener_processor).forced_token(0) == OPENER_IDS[1]
+    assert opener_processor._rows[0].done is True
+    assert _step(opener_processor).untouched(0)
+

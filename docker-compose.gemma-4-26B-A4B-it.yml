@@ -47,7 +47,7 @@ services:
       - CYBERGATE_REF_DIR_PATH=/work/cybergate_public/kits/gemma4/gemma4_L21_refusal_dir.json
       # --- Runtime & Telemetry Logs ---
       - CYBERGATE_IPC_DIR=/dev/shm/cybergate_ipc_gemma4
-      - CYBERGATE_SANITIZE_REASONING=1
+      - CYBERGATE_SANITIZE_REASONING=0
       - CYBERGATE_MAX_MODEL_LEN=${MAX_MODEL_LEN:-262144}
       - CYBERGATE_EVENTS_LOG_PATH=/work/cybergate_public/logs/gemma4_events.log
       - CYBERGATE_PROXY_TRACE_JSONL=/work/cybergate_public/logs/proxy_trace.jsonl
@@ -80,4 +80,8 @@ services:
         --enforce-eager
         --enable-prefix-caching
         --attention-backend TRITON_ATTN
+        --chat-template /work/cybergate_public/kits/gemma4/chat_template.jinja
+        --reasoning-parser gemma4
+        --enable-auto-tool-choice
+        --tool-call-parser gemma4
         --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware

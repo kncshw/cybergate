@@ -8,7 +8,9 @@ Runs in the **API-server** process (`MainProcess`), installed with
    hooks observe each user turn, both standalone and in context, and publish decision records. This
    is the only way the API-server process can get a score: the hooks live in the other process.
 2. **Decide.** Calls the gate with those records.
-3. **Route.** Either forwards the request untouched (`fired=False`), or runs a think-injection route.
+3. **Route.** Either forwards the request untouched (`fired=False`), or runs the native
+   `/v1/chat/completions` closed-loop steering path (injecting `cybergate_open_think_prefix` via
+   `chat_template_kwargs` so `RefusalSteeredCoTProcessor` steers decoding in-engine).
 
 Note the asymmetry that makes the probe necessary and awkward: with `--enable-prefix-caching`, a
 repeated prefix produces no prefill, so the hook does not run and no fresh record appears. The probe
@@ -27,14 +29,23 @@ from typing import Any, Callable, Sequence
 from ..boilerplate import strip_injected_think_boilerplate
 from ..config import DEFAULT_MODEL_ID, SUPPRESS_OPENER_XARG, env_first
 from ..decision import evaluate_gate_for_messages
-from ..families import family_for_model_id
+from ..families import ModelFamily, family_for_model_id
 from ..messages import extract_user_turns
 from ..state import clear_request_gate_state, keys as key_builders
 from ..state.ipc_shm import ShmDecisionStore
 from ..telemetry.log import log_cybergate_event
 from .asgi import AsgiDispatcher, replay_body
-from .proxy import start_background_proxy_server
-from .think_routes import RouteConfig, RouteRequest, measured_closed_loop_route, route_for_mode
+from .proxy import (
+    extract_tool_calls_from_content,
+    repair_thought_and_visible,
+    start_background_proxy_server,
+)
+from .think_routes import (
+    MEASURED_MODES,
+    RouteConfig,
+    RouteRequest,
+    route_for_mode,
+)
 
 __all__ = ["CyberGateThinkMiddleware"]
 
@@ -121,12 +132,12 @@ class CyberGateThinkMiddleware:
                         "role": "assistant",
                         "content": content,
                         "reasoning_content": reasoning_content,
+                        "reasoning": reasoning_content,
                     },
                     "finish_reason": choice0.get("finish_reason", "stop"),
                 }
             ],
             "usage": comp_json.get("usage", {}),
-            "x_cybergate": x_cybergate,
             "x_cybergate": x_cybergate,
         }
 
@@ -328,8 +339,9 @@ class CyberGateThinkMiddleware:
         choice0 = (final_chat_obj.get("choices") or [{}])[0]
         msg = choice0.get("message") or {}
         content = msg.get("content") or ""
-        reasoning = msg.get("reasoning_content") or ""
-        finish_reason = choice0.get("finish_reason") or "stop"
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        tool_calls = msg.get("tool_calls") or []
+        finish_reason = choice0.get("finish_reason") or ("tool_calls" if tool_calls else "stop")
         x_cg = final_chat_obj.get("x_cybergate")
 
         chunks: list[str] = []
@@ -342,27 +354,53 @@ class CyberGateThinkMiddleware:
                 "choices": [
                     {
                         "index": 0,
-                        "delta": {"role": "assistant", "reasoning_content": reasoning},
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": reasoning,
+                            "reasoning": reasoning,
+                        },
                         "finish_reason": None,
                     }
                 ],
             }
             chunks.append(f"data: {json.dumps(c_reas)}\n\n")
 
-        c_body = {
-            "id": chat_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": content},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        chunks.append(f"data: {json.dumps(c_body)}\n\n")
+        if content or not tool_calls:
+            c_body = {
+                "id": chat_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": content},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            chunks.append(f"data: {json.dumps(c_body)}\n\n")
+
+        if tool_calls:
+            c_tc = {
+                "id": chat_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {"index": idx, **tc} for idx, tc in enumerate(tool_calls)
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            chunks.append(f"data: {json.dumps(c_tc)}\n\n")
 
         c_done: dict[str, Any] = {
             "id": chat_id,
@@ -384,6 +422,130 @@ class CyberGateThinkMiddleware:
         chunks.append(f"data: {json.dumps(c_done)}\n\n")
         chunks.append("data: [DONE]\n\n")
         return "".join(chunks).encode("utf-8")
+
+    async def _run_native_closed_loop_chat(
+        self,
+        scope: dict[str, Any],
+        payload: dict[str, Any],
+        family: ModelFamily,
+        max_tokens: int,
+        max_cot_tokens: int,
+        tool_turn: bool,
+        do_sanitize: bool,
+        in_context_record: dict[str, Any] | None,
+        gate_info: dict[str, Any],
+        req_id: str,
+        mode: str,
+        started: float,
+    ) -> tuple[int, list[tuple[bytes, bytes]], dict[str, Any]]:
+        """Execute the measured closed-loop route natively over `/v1/chat/completions`.
+
+        Passes `cybergate_open_think_prefix` via `chat_template_kwargs` so the kit's Jinja chat
+        template ends the prompt with `<|channel>thought\\n` + `OPEN_THINK_PREFIX` (or
+        `<think>\\n` + `OPEN_THINK_PREFIX` on Qwen3.8), matching `prompt_suffix_ids` in
+        `RefusalSteeredCoTProcessor` without detouring through `/v1/completions`.
+        """
+        chat_payload = dict(payload)
+        existing_ctk = chat_payload.get("chat_template_kwargs")
+        ctk = dict(existing_ctk) if isinstance(existing_ctk, dict) else {}
+        ctk["enable_thinking"] = True
+        ctk["cybergate_open_think_prefix"] = family.open_think_prefix
+        ctk.setdefault("cybergate_default_system_prompt", "You are a helpful assistant.")
+        chat_payload["chat_template_kwargs"] = ctk
+        chat_payload["skip_special_tokens"] = False
+
+        if tool_turn:
+            existing_xargs = chat_payload.get("vllm_xargs")
+            xargs = dict(existing_xargs) if isinstance(existing_xargs, dict) else {}
+            xargs[SUPPRESS_OPENER_XARG] = 1
+            chat_payload["vllm_xargs"] = xargs
+
+        total_gen_tokens = max_cot_tokens + max_tokens
+        if in_context_record and in_context_record.get("n_prefill_tokens"):
+            max_model_len = int(env_first("CYBERGATE_MAX_MODEL_LEN", default="262144") or 262144)
+            n_prefill = int(in_context_record["n_prefill_tokens"])
+            total_gen_tokens = max(64, min(total_gen_tokens, max_model_len - n_prefill - 128))
+        chat_payload["max_tokens"] = total_gen_tokens
+        chat_payload.pop("max_completion_tokens", None)
+
+        status, headers, chat_out = await self.dispatch.post_json(scope, CHAT_PATH, chat_payload)
+        choices = chat_out.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            choice0 = choices[0]
+            msg = choice0.setdefault("message", {"role": "assistant", "content": ""})
+            gen_reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+            raw_content = msg.get("content") or ""
+
+            if gen_reasoning:
+                raw_reasoning = (
+                    gen_reasoning
+                    if gen_reasoning.startswith(family.open_think_prefix)
+                    else f"{family.open_think_prefix}{gen_reasoning}"
+                )
+                visible_content = raw_content
+            elif family.thought_close_tag in raw_content:
+                cot_part, visible_content = raw_content.split(family.thought_close_tag, 1)
+                raw_reasoning = (
+                    cot_part
+                    if cot_part.startswith(family.open_think_prefix)
+                    else f"{family.open_think_prefix}{cot_part}"
+                )
+            elif raw_content and not msg.get("tool_calls"):
+                # If neither reasoning nor thought_close_tag is present, treat raw_content as visible
+                # when it doesn't look like an unclosed thought, or as reasoning if thought never closed.
+                raw_reasoning = family.open_think_prefix
+                visible_content = raw_content
+            else:
+                raw_reasoning = family.open_think_prefix
+                visible_content = raw_content
+
+            inline_marker = family.inline_cot_suppression.strip()
+            num_inline_injections = (
+                raw_reasoning.count(inline_marker) if inline_marker else 0
+            )
+
+            if do_sanitize:
+                clean_reasoning, did_strip = strip_injected_think_boilerplate(
+                    raw_reasoning, family
+                )
+            else:
+                clean_reasoning, did_strip = raw_reasoning, False
+
+            clean_reasoning, visible_content = repair_thought_and_visible(
+                clean_reasoning, visible_content
+            )
+
+            if tool_turn and not msg.get("tool_calls") and visible_content:
+                visible_content, extracted_tcs, _ = extract_tool_calls_from_content(
+                    visible_content
+                )
+                if extracted_tcs:
+                    msg["tool_calls"] = extracted_tcs
+                    choice0["finish_reason"] = "tool_calls"
+
+            msg["content"] = visible_content.strip() if visible_content else ""
+            msg["reasoning_content"] = clean_reasoning
+            msg["reasoning"] = clean_reasoning
+        else:
+            raw_reasoning = ""
+            clean_reasoning = ""
+            did_strip = False
+            num_inline_injections = 0
+
+        chat_out["x_cybergate"] = {
+            **gate_info,
+            "request_id": req_id,
+            "mode": mode,
+            "routed": "cybergate_measured_closed_loop",
+            "think_injected": True,
+            "steering": "measured_refusal_projection",
+            "num_inline_injections": num_inline_injections,
+            "boilerplate_stripped": did_strip,
+            "raw_reasoning_chars": len(raw_reasoning),
+            "clean_reasoning_chars": len(clean_reasoning),
+            "elapsed_s": round(time.time() - started, 3),
+        }
+        return status, headers, chat_out
 
     async def _handle_chat(
         self,
@@ -408,8 +570,8 @@ class CyberGateThinkMiddleware:
         # A tool-bearing turn declines the force-emitted post-think opener. The controller forces
         # `POST_THINK_OPENER` as the first visible tokens, which commits the answer to prose before
         # the model emits a free token -- so a turn whose correct output is a tool call cannot
-        # produce one. `cybergate_tool_turn` is how the Open WebUI bridge says so, having already
-        # consumed `tools` itself; a caller that passes `tools` through is recognised directly.
+        # produce one. `cybergate_tool_turn` is how the proxy says so; a caller that passes `tools`
+        # through is recognised directly.
         tool_turn = bool(payload.pop("cybergate_tool_turn", False)) or bool(payload.get("tools"))
 
         include_bos = family.supports_bos
@@ -481,17 +643,18 @@ class CyberGateThinkMiddleware:
             f"sticky_revoked={gate_info.get('sticky_revoked')} source={gate_info.get('source')}",
         )
 
-        # An unrecognised mode falls through to the measured closed loop, mirroring the canonical
-        # middleware's bare `else:` -- except that the default is now the measured route rather than
-        # the regex one. Only `baseline` passes through. The remote client differs and raises.
+        is_native_closed_loop = False
         if mode == "baseline":
+            route_factory = None
+        elif mode in MEASURED_MODES:
+            is_native_closed_loop = True
             route_factory = None
         else:
             try:
-                route_factory = route_for_mode(mode) or measured_closed_loop_route
+                route_factory = route_for_mode(mode)
+                if route_factory is None:
+                    is_native_closed_loop = True
             except ValueError as exc:
-                # A mode that cannot run in this configuration. Report it as the caller's error
-                # rather than letting it surface as an opaque 500.
                 log_cybergate_event("CYBERGATE-MIDDLEWARE-WARN", f"req_id={req_id} {exc}")
                 return (
                     {"error": {"message": str(exc), "type": "BadRequestError", "code": 400}},
@@ -499,9 +662,14 @@ class CyberGateThinkMiddleware:
                     [(b"content-type", b"application/json")],
                 )
 
-        if route_factory is None or not gate_info["fired"]:
+        if not gate_info["fired"] or (route_factory is None and not is_native_closed_loop):
             # Pass through untouched.
             status, headers, chat_out = await self.dispatch.post_json(scope, CHAT_PATH, payload)
+            choices = chat_out.get("choices")
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                msg0 = choices[0].get("message")
+                if isinstance(msg0, dict) and "reasoning_content" not in msg0:
+                    msg0["reasoning_content"] = msg0.get("reasoning") or ""
             chat_out["x_cybergate"] = {
                 **gate_info,
                 "request_id": req_id,
@@ -512,6 +680,21 @@ class CyberGateThinkMiddleware:
                 "elapsed_s": round(time.time() - started, 3),
             }
             final_chat_obj = chat_out
+        elif is_native_closed_loop:
+            status, headers, final_chat_obj = await self._run_native_closed_loop_chat(
+                scope=scope,
+                payload=payload,
+                family=family,
+                max_tokens=max_tokens,
+                max_cot_tokens=max_cot_tokens,
+                tool_turn=tool_turn,
+                do_sanitize=do_sanitize,
+                in_context_record=in_context_record,
+                gate_info=gate_info,
+                req_id=req_id,
+                mode=mode,
+                started=started,
+            )
         else:
             extra_payload: dict[str, Any] = {"add_special_tokens": False}
             if tool_turn:
@@ -522,12 +705,11 @@ class CyberGateThinkMiddleware:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 max_cot_tokens=max_cot_tokens,
-                # The routes that write the opener into the prompt themselves must leave it out too,
-                # or a tool turn gets it back by the other path.
                 include_opener=not tool_turn,
                 include_bos=include_bos,
                 extra_payload=extra_payload,
             )
+            assert route_factory is not None
             route = route_factory(mode, list(messages), config)
             status, headers, result = await self._drive_route(scope, route)
 
@@ -592,4 +774,3 @@ class CyberGateThinkMiddleware:
                 request = route.send(response)
             except StopIteration as stop:
                 return status, headers, stop.value
-

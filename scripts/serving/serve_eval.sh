@@ -129,6 +129,8 @@ fi
 # Serving requirements the kit declares for itself. This was a hardcoded `*[Qq]wen*) PARSER=qwen3`
 # arm, which a third kit could not have expressed without editing this script.
 : "${PARSER:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("reasoning_parser") or "")' "$MANIFEST")}"
+TOOL_PARSER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("tool_call_parser") or "")' "$MANIFEST")
+CHAT_TPL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("serve",{}).get("chat_template") or "")' "$MANIFEST")
 
 # The manifest names the default operator and refusal direction, so those filenames live in exactly
 # one place. `--op`/`--ref` still override, and are resolved inside the kit.
@@ -176,6 +178,10 @@ SERVE_LOG="$REPO/logs/${NAME}_serve.log"
 
 PARSER_FLAG=""
 [ -n "$PARSER" ] && PARSER_FLAG="--reasoning-parser $PARSER"
+TOOL_FLAG=""
+[ -n "$TOOL_PARSER" ] && TOOL_FLAG="--enable-auto-tool-choice --tool-call-parser $TOOL_PARSER"
+TPL_FLAG=""
+[ -n "$CHAT_TPL" ] && TPL_FLAG="--chat-template /work/cybergate/kits/${KIT}/${CHAT_TPL}"
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" \
@@ -206,7 +212,7 @@ docker run -d --name "$NAME" \
          ${MODEL_SERVE_FLAGS} \
          --max-model-len ${CTX} --gpu-memory-utilization ${MEM_UTIL} \
          --enforce-eager --enable-prefix-caching \
-         ${PARSER_FLAG} \
+         ${TPL_FLAG} ${PARSER_FLAG} ${TOOL_FLAG} \
          --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware \
          >> /work/cybergate/logs/${NAME}_serve.log 2>&1"
 
