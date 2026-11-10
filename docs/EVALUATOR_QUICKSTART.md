@@ -127,7 +127,7 @@ banner exchange.
 | flag | why |
 |---|---|
 | `--quantization fp8_per_channel` | 26B at bf16 (~52 GB weights) does not fit on a 40–48 GB GPU; it loads, then OOMs (`gemma4`; `qwen38` uses `--dtype bfloat16` on 80 GB+) |
-| `--no-enable-prefix-caching` | **the subtle one.** The gate probes the prefill. A cached prefix skips the forward pass, so the hook never runs and the decision is silently stale -- the server answers normally and the gate is wrong |
+| `--enable-prefix-caching` | reuses KV cache across multi-turn history and Pass-1 $\to$ Pass-2 generation (`middleware._probe_observations` salts Pass-1 observation probes via `cache_salt` so the prefill hook always observes the full prompt, while `sync_bindings` keeps CoT decode steering bound to the full prompt key) |
 | `--enforce-eager` | the hooks read hidden states; compiled graphs elide them |
 | `--attention-backend TRITON_ATTN` | the backend `gemma4` was measured on (`qwen38` omits this flag for hybrid Gated DeltaNet layers) |
 

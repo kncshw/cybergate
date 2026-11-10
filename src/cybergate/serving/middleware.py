@@ -151,7 +151,10 @@ class CyberGateThinkMiddleware:
         did_probe = False
         latest_sha = key_builders.text_sha256(user_turns[-1])
 
-        async def probe(probe_messages: Sequence[dict[str, Any]]) -> None:
+        async def probe(
+            probe_messages: Sequence[dict[str, Any]],
+            cache_salt: str | None = None,
+        ) -> None:
             # The client's own system prompt is dropped before rendering, because it is a different
             # render rather than more context. Both directions were fitted with
             # `DEFAULT_SYSTEM_PROMPT` in front, and the refusal reading is a single cosine at the
@@ -170,16 +173,19 @@ class CyberGateThinkMiddleware:
             prompt = family_for_model_id(model_id).build_raw_prompt(
                 probe_messages, mode="baseline", include_bos=include_bos
             )
+            req_payload: dict[str, Any] = {
+                "model": model_id,
+                "prompt": prompt,
+                "max_tokens": 1,
+                "temperature": 0.0,
+                "add_special_tokens": False,
+            }
+            if cache_salt:
+                req_payload["cache_salt"] = cache_salt
             await self.dispatch.post_json(
                 scope,
                 COMPLETIONS_PATH,
-                {
-                    "model": model_id,
-                    "prompt": prompt,
-                    "max_tokens": 1,
-                    "temperature": 0.0,
-                    "add_special_tokens": False,
-                },
+                req_payload,
             )
 
         def standalone_record(sha: str) -> dict[str, Any] | None:
@@ -194,7 +200,10 @@ class CyberGateThinkMiddleware:
                 record = standalone_record(sha)
                 if record is None or record.get("s_ref_z") is None:
                     did_probe = True
-                    await probe([{"role": "user", "content": turn_text}])
+                    await probe(
+                        [{"role": "user", "content": turn_text}],
+                        cache_salt=f"cg_st_{sha}",
+                    )
             standalone = standalone_record(latest_sha)
 
             conv_key = key_builders.conversation_key(user_turns)
@@ -208,7 +217,7 @@ class CyberGateThinkMiddleware:
             if in_context is None or in_context.get("s_ref_z") is None:
                 did_probe = True
                 probe_t0 = time.time() - 0.05
-                await probe(messages)
+                await probe(messages, cache_salt=f"cg_ctx_{conv_key}")
                 in_context = in_context_record()
                 if in_context is None or in_context.get("s_ref_z") is None:
                     pc = (
@@ -220,22 +229,34 @@ class CyberGateThinkMiddleware:
                         in_context = pc
         else:
 
-            def single_turn_record() -> dict[str, Any] | None:
-                return (
+            def single_turn_record(
+                allow_pc: bool = False, min_ts: float = 0.0
+            ) -> dict[str, Any] | None:
+                rec = (
                     self.store.get(key_builders.standalone_turn_key_from_sha(latest_sha))
                     or self.store.get(key_builders.conversation_key(user_turns))
                     or self.store.get(latest_sha)
-                    or self.store.get(f"pc_ctx_{latest_sha}")
                 )
+                if rec is not None:
+                    return rec
+                if allow_pc:
+                    pc = self.store.get(f"pc_ctx_{latest_sha}")
+                    if pc is not None and float(pc.get("ts", 0.0)) >= min_ts:
+                        return pc
+                return None
 
             in_context = single_turn_record()
             if in_context is None or in_context.get("s_ref_z") is None:
                 did_probe = True
-                await probe(messages)
-                in_context = single_turn_record()
+                probe_t0 = time.time() - 0.05
+                await probe(messages, cache_salt=f"cg_st_{latest_sha}")
+                in_context = single_turn_record(allow_pc=True, min_ts=probe_t0)
                 if in_context is None or in_context.get("s_ref_z") is None:
-                    await probe([{"role": "user", "content": user_turns[-1]}])
-                    in_context = single_turn_record()
+                    await probe(
+                        [{"role": "user", "content": user_turns[-1]}],
+                        cache_salt=f"cg_st_{latest_sha}",
+                    )
+                    in_context = single_turn_record(allow_pc=True, min_ts=probe_t0)
             standalone = in_context
 
         probe_ms = round((time.perf_counter() - started) * 1000.0, 2) if did_probe else 0.0

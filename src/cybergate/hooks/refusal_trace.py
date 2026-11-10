@@ -60,12 +60,13 @@ Two further guards:
   controller falls back to it **only when it is tracking exactly one row**. That preserves the
   single-request path, which is the one the live run proved works.
 
-## Known limitation, deliberately observable rather than silent
+## Prefix caching and controller-managed bindings
 
-With prefix caching, a prefill may present only the uncached suffix, so the hook's key will not match
-the controller's full-prompt key and no reading is found. The controller then does not steer, and
-increments `unresolved` -- see `SteeringStats`. The previous design failed the same way but silently,
-which is what made the row-join defect take a live concurrency experiment to find.
+With prefix caching enabled, a prefill presents only the uncached suffix to the forward hook, so a
+key hashed over the hook's `seq_ids` would not match the controller's full-prompt key. Once the
+controller is active it drives the `slot -> full_prompt_key` table directly via `sync_bindings`
+(`_CONTROLLER_MANAGED = True`), and `bind_request` stands down so truncated prefill slices never
+overwrite the authoritative key.
 """
 from __future__ import annotations
 

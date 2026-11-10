@@ -78,6 +78,6 @@ services:
         --max-model-len ${MAX_MODEL_LEN:-32768}
         --gpu-memory-utilization ${MEM_UTIL:-0.88}
         --enforce-eager
-        --no-enable-prefix-caching
+        --enable-prefix-caching
         --attention-backend TRITON_ATTN
         --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware

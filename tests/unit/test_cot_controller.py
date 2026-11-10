@@ -658,15 +658,10 @@ def test_heartbeat_logs_even_when_no_token_is_forced(
 
 
 # =================================================================================================
-# Prefix caching truncates the join key, so the condition must be reported at startup.
+# Prefix caching activates controller-managed slot bindings at startup.
 # =================================================================================================
 def test_warns_when_prefix_caching_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With caching on, a prefill shows the hook only the uncached suffix, so the key never matches.
-
-    Measured 2026-10-28: concurrent prefill slices were 17-21 tokens against full prompts of
-    108-117, and turning caching off restored steering. Silence here is what made it present as
-    "steering does nothing".
-    """
+    """With caching on, the controller immediately claims `refusal_trace` management at startup."""
     import cybergate.hooks.cot_controller as mod
 
     emitted: list[tuple[str, str]] = []
@@ -680,8 +675,10 @@ def test_warns_when_prefix_caching_is_enabled(monkeypatch: pytest.MonkeyPatch) -
     )
     proc = mod.RefusalSteeredCoTProcessor(config, device="cpu", is_pin_memory=False)
     assert proc.prefix_caching is True
-    assert proc.enabled is True, "the warning must not disable the controller"
-    assert any(tag.endswith("-WARN") and "prefix caching" in msg for tag, msg in emitted)
+    assert proc.enabled is True
+    assert refusal_trace.stats()["controller_managed"] == 1
+    assert any("prefix_caching=True" in msg for _tag, msg in emitted)
+    assert not any(tag.endswith("-WARN") for tag, _msg in emitted)
 
 
 def test_no_warning_when_prefix_caching_is_off(monkeypatch: pytest.MonkeyPatch) -> None:

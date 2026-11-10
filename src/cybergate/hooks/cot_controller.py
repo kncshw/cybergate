@@ -230,17 +230,9 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
                 add_special_tokens=False,
             )
         )
-        if self.prefix_caching:
-            # Not fatal, but steering will mostly not engage, and saying so beats appearing to work.
-            log_cybergate_event(
-                "CYBERGATE-COT-CONTROLLER-WARN",
-                "prefix caching is enabled: a prefill then presents only the uncached suffix, so the "
-                "key the hook publishes under will usually not match the full-prompt key this "
-                "controller computes, and steering will be skipped rather than applied. Measured "
-                "2026-10-28: concurrent prefill slices were 17-21 tokens against full prompts of "
-                "108-117, and disabling prefix caching restored steering. Launch with "
-                "--no-enable-prefix-caching to steer, or accept that it is inactive.",
-            )
+        # Claim management of the refusal_trace slot -> key table immediately so hook-side
+        # `bind_request` stands down even when prefix caching presents truncated prefill slices.
+        refusal_trace.sync_bindings({})
 
         log_cybergate_event(
             "CYBERGATE-COT-CONTROLLER",
@@ -543,13 +535,9 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
 def _prefix_caching_enabled(vllm_config: Any) -> bool:
     """Whether this engine has prefix caching on.
 
-    It interacts badly with the identity join: with caching on, a prefill shows the hook only the
-    *uncached suffix* of the prompt, so the key it derives differs from the full-prompt key the
-    controller computes from `prompt_tok_ids`, and no reading is ever found. Reported at startup so
-    the condition is visible rather than presenting as "steering mysteriously does nothing".
-
-    Defaults to False when the config cannot be read -- an unknown value should not produce a
-    warning that may be wrong.
+    Recorded in the startup telemetry log. When enabled, `RefusalSteeredCoTProcessor` drives the
+    `refusal_trace` slot-to-key bindings directly (`sync_bindings`) so hook-side prefill slices do
+    not overwrite the full-prompt keys.
     """
     cache_config = getattr(vllm_config, "cache_config", None)
     return bool(getattr(cache_config, "enable_prefix_caching", False))

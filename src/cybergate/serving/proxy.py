@@ -390,8 +390,8 @@ def repair_thought_and_visible(reasoning: str, content: str) -> tuple[str, str]:
                     sep = "\n\n" if not r_tail.endswith("\n") else ""
                     content = f"{r_tail.strip()}{sep}{content.lstrip()}"
 
-    # 1b. If the model began emitting <tool_call>{...} inside reasoning before <channel|> was forced:
-    m_tc_in_reas = re.search(r"<tool_call>\s*\{", reasoning)
+    # 1b. If the model began emitting <tool_call>{...} or <|tool_call>call:... inside reasoning before <channel|> was forced:
+    m_tc_in_reas = re.search(r"(?:<tool_call>\s*\{|<\|tool_call>call:\w+\{)", reasoning)
     if m_tc_in_reas:
         tc_idx = m_tc_in_reas.start()
         tc_frag = _BOILERPLATE_INJECT_RE.sub("", reasoning[tc_idx:])
@@ -449,9 +449,156 @@ _TOOL_CALL_RE = re.compile(
     re.DOTALL,
 )
 _GEMMA_CALL_RE = re.compile(
-    r"(?:<\|tool_call>|(?<![a-zA-Z0-9_]))call:(\w+)\{((?:(?!call:\w+\{)[^\}])+)\}(?:<tool_call\|>)?",
+    r"(?:<\|tool_call>|(?<![a-zA-Z0-9_]))call:(\w+)\{((?:(?!call:\w+\{)[^\}])*)\}(?:<tool_call\|>)?",
     re.DOTALL,
 )
+_GEMMA_CALL_HEAD_RE = re.compile(r"(?:<\|tool_call>|(?<![a-zA-Z0-9_]))call:(\w+)\{")
+_UNQUOTED_KEY_RE = re.compile(r'(?<![a-zA-Z0-9_"])([a-zA-Z_][a-zA-Z0-9_]*)\s*:')
+
+
+def _normalize_gemma_quotes(s: str) -> str:
+    """Convert Gemma `<|\"|>...<|\"|>` string delimiters into standard JSON string literals."""
+    if '<|"|>' not in s:
+        return s
+    out: list[str] = []
+    pos = 0
+    while True:
+        q1 = s.find('<|"|>', pos)
+        if q1 == -1:
+            out.append(s[pos:])
+            break
+        out.append(s[pos:q1])
+        q2 = s.find('<|"|>', q1 + 5)
+        if q2 == -1:
+            out.append(json.dumps(s[q1 + 5 :]))
+            break
+        out.append(json.dumps(s[q1 + 5 : q2]))
+        pos = q2 + 5
+    return "".join(out)
+
+
+def _quote_unquoted_keys(s: str) -> str:
+    """Quote unquoted JS/Gemma object keys (`key:` -> `\"key\":`) outside string literals."""
+    out: list[str] = []
+    n = len(s)
+    i = 0
+    seg_start = 0
+    while i < n:
+        if s[i] == '"':
+            out.append(_UNQUOTED_KEY_RE.sub(r'"\1":', s[seg_start:i]))
+            str_start = i
+            i += 1
+            while i < n:
+                if s[i] == "\\":
+                    i += 2
+                elif s[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            out.append(s[str_start:i])
+            seg_start = i
+        else:
+            i += 1
+    if seg_start < n:
+        out.append(_UNQUOTED_KEY_RE.sub(r'"\1":', s[seg_start:n]))
+    return "".join(out)
+
+
+def _parse_gemma_call_args(t_name: str, body: str) -> dict[str, Any] | None:
+    """Parse the body inside `call:name{...}` into a JSON-serializable arguments dict."""
+    norm = _normalize_gemma_quotes(body).strip()
+    if not norm:
+        return {}
+    quoted = _quote_unquoted_keys(norm)
+    try:
+        parsed = json.loads("{" + quoted + "}", strict=False)
+        if isinstance(parsed, dict):
+            if t_name == "bash" and "command" in parsed and "description" not in parsed:
+                parsed["description"] = "Execute command"
+            return parsed
+    except Exception:
+        pass
+
+    args: dict[str, Any] = {}
+    for m_kv in re.finditer(
+        r'(?:"([a-zA-Z_][a-zA-Z0-9_]*)"|([a-zA-Z_][a-zA-Z0-9_]*))\s*:\s*'
+        r'(?:"((?:\\.|[^"\\])*)"|(-?\d+(?:\.\d+)?)|(\btrue\b|\bfalse\b|\bnull\b))',
+        norm,
+        re.DOTALL,
+    ):
+        key = m_kv.group(1) or m_kv.group(2)
+        if m_kv.group(3) is not None:
+            args[key] = m_kv.group(3).replace('\\"', '"').replace("\\n", "\n")
+        elif m_kv.group(4) is not None:
+            num_s = m_kv.group(4)
+            args[key] = float(num_s) if "." in num_s else int(num_s)
+        elif m_kv.group(5) is not None:
+            lit = m_kv.group(5)
+            args[key] = True if lit == "true" else (False if lit == "false" else None)
+
+    if t_name == "bash" and "command" in args and "description" not in args:
+        args["description"] = "Execute command"
+    return args if args else None
+
+
+def _iter_gemma_calls(content: str) -> list[tuple[int, int, str, str]]:
+    """Find balanced `call:name{...}` / `<|tool_call>call:name{...}<tool_call|>` spans in O(N)."""
+    spans: list[tuple[int, int, str, str]] = []
+    n = len(content)
+    pos = 0
+    while pos < n:
+        m = _GEMMA_CALL_HEAD_RE.search(content, pos)
+        if not m:
+            break
+        t_name = m.group(1)
+        body_start = m.end()
+        i = body_start
+        depth = 1
+        aborted_at: int | None = None
+        while i < n and depth > 0:
+            if content.startswith('<|"|>', i):
+                q2 = content.find('<|"|>', i + 5)
+                if q2 == -1:
+                    i = n
+                    break
+                i = q2 + 5
+            elif content[i] == '"':
+                i += 1
+                while i < n:
+                    if content[i] == "\\":
+                        i += 2
+                    elif content[i] == '"':
+                        i += 1
+                        break
+                    else:
+                        i += 1
+            elif content[i] == "c" and content.startswith("call:", i):
+                m_inner = _GEMMA_CALL_HEAD_RE.match(content, i)
+                if m_inner:
+                    aborted_at = i
+                    break
+                i += 1
+            elif content[i] == "{":
+                depth += 1
+                i += 1
+            elif content[i] == "}":
+                depth -= 1
+                i += 1
+            else:
+                i += 1
+        if aborted_at is not None:
+            pos = aborted_at
+            continue
+        if depth != 0:
+            break
+        body = content[body_start : i - 1]
+        span_end = i
+        if content.startswith("<tool_call|>", span_end):
+            span_end += len("<tool_call|>")
+        spans.append((m.start(), span_end, t_name, body))
+        pos = span_end
+    return spans
 
 
 def _sanitize_tool_call_json(raw_json: str) -> str:
@@ -543,21 +690,13 @@ def extract_tool_calls_from_content(content: str) -> tuple[str, list, int]:
         if "<tool_call>" in _TOOL_CALL_RE.sub("", content):
             xml_matched = True
 
+    gemma_spans: list[tuple[int, int]] = []
     if not tool_calls and "call:" in content:
-        for m in _GEMMA_CALL_RE.finditer(content):
-            t_name = m.group(1)
-            body = m.group(2) if m.lastindex and m.lastindex >= 2 else ""
-            m_cmd = re.search(r'command\s*:\s*"([^"]+)"', body)
-            m_desc = re.search(r'description\s*:\s*"([^"]+)"', body)
-            m_fp = re.search(r'filePath\s*:\s*"([^"]+)"', body)
-            args = {}
-            if m_cmd:
-                args["command"] = m_cmd.group(1)
-                args["description"] = m_desc.group(1) if m_desc else "Execute command"
-            elif m_fp:
-                args["filePath"] = m_fp.group(1)
-            if args:
+        for span_start, span_end, t_name, body in _iter_gemma_calls(content):
+            args = _parse_gemma_call_args(t_name, body)
+            if args is not None:
                 gemma_matched = True
+                gemma_spans.append((span_start, span_end))
                 tool_calls.append(
                     {
                         "id": f"call_{uuid.uuid4().hex[:12]}",
@@ -583,7 +722,14 @@ def extract_tool_calls_from_content(content: str) -> tuple[str, list, int]:
             flags=re.DOTALL,
         )
     if gemma_matched:
-        cleaned_content = _GEMMA_CALL_RE.sub("", cleaned_content)
+        parts: list[str] = []
+        last_idx = 0
+        for s_start, s_end in gemma_spans:
+            parts.append(cleaned_content[last_idx:s_start])
+            last_idx = s_end
+        parts.append(cleaned_content[last_idx:])
+        cleaned_content = "".join(parts)
+        cleaned_content = cleaned_content.replace("<|tool_call>", "").replace("<tool_call|>", "")
     if "<tool_call>" in cleaned_content or "</tool_call>" in cleaned_content:
         cleaned_content = cleaned_content.replace("<tool_call>", "").replace("</tool_call>", "")
     return cleaned_content.strip(), tool_calls, malformed
@@ -726,9 +872,17 @@ def normalize_tools_and_messages(
             if has_rea_mcp
             else ""
         )
+        is_opencode_boilerplate = (
+            "you are opencode, an interactive cli tool" in combined_sys.lower()
+            or len(combined_sys) > 4000
+        )
         custom_sys_prefix = (
             f"{combined_sys}\n\n"
-            if combined_sys and combined_sys.lower() != "you are a helpful assistant."
+            if (
+                combined_sys
+                and not is_opencode_boilerplate
+                and combined_sys.lower() != "you are a helpful assistant."
+            )
             else ""
         )
         sys_prompt = (

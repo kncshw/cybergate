@@ -272,7 +272,7 @@ def test_legitimate_xml_and_gemma_tool_calls_and_rea_mcp_normalization() -> None
     assert tcs[0]["function"]["name"] == "bash"
     assert json.loads(tcs[0]["function"]["arguments"]) == {"command": "id"}
 
-    # 2. Gemma call:
+    # 2. Gemma call: (read, websearch with <|tool_call>...<tool_call|>, write with nested braces, and <|"|> quotes)
     visible_g, tcs_g, _ = proxy_mod.extract_tool_calls_from_content(
         'Checking file.\ncall:read{filePath:"/etc/hosts"}'
     )
@@ -280,6 +280,38 @@ def test_legitimate_xml_and_gemma_tool_calls_and_rea_mcp_normalization() -> None
     assert len(tcs_g) == 1
     assert tcs_g[0]["function"]["name"] == "read"
     assert json.loads(tcs_g[0]["function"]["arguments"]) == {"filePath": "/etc/hosts"}
+
+    visible_ws, tcs_ws, _ = proxy_mod.extract_tool_calls_from_content(
+        '<|tool_call>call:websearch{query: "brocolli2shell vulnerability exploit"}<tool_call|>'
+    )
+    assert visible_ws == ""
+    assert len(tcs_ws) == 1
+    assert tcs_ws[0]["function"]["name"] == "websearch"
+    assert json.loads(tcs_ws[0]["function"]["arguments"]) == {
+        "query": "brocolli2shell vulnerability exploit"
+    }
+
+    visible_wr, tcs_wr, _ = proxy_mod.extract_tool_calls_from_content(
+        '<|tool_call>call:write{filePath: "/tmp/poc.py", content: "d = {\'k\': 1}\\nprint(d)"}<tool_call|>'
+    )
+    assert visible_wr == ""
+    assert len(tcs_wr) == 1
+    assert tcs_wr[0]["function"]["name"] == "write"
+    assert json.loads(tcs_wr[0]["function"]["arguments"]) == {
+        "filePath": "/tmp/poc.py",
+        "content": "d = {'k': 1}\nprint(d)",
+    }
+
+    visible_gq, tcs_gq, _ = proxy_mod.extract_tool_calls_from_content(
+        '<|tool_call>call:webfetch{url:<|"|>https://example.com<|"|>, format:<|"|>markdown<|"|>}<tool_call|>'
+    )
+    assert visible_gq == ""
+    assert len(tcs_gq) == 1
+    assert tcs_gq[0]["function"]["name"] == "webfetch"
+    assert json.loads(tcs_gq[0]["function"]["arguments"]) == {
+        "url": "https://example.com",
+        "format": "markdown",
+    }
 
     # 3. REA MCP tools in normalize_tools_and_messages
     payload: dict[str, Any] = {

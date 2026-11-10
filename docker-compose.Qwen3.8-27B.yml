@@ -78,5 +78,5 @@ services:
         --max-model-len ${MAX_MODEL_LEN:-32768}
         --gpu-memory-utilization ${MEM_UTIL:-0.90}
         --enforce-eager
-        --no-enable-prefix-caching
+        --enable-prefix-caching
         --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware

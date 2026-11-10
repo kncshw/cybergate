@@ -227,17 +227,17 @@ export CYBERGATE_PROXY_PORT=8001        # Port :8001 auto-binds for gated CyberG
 
 vllm serve google/gemma-4-26B-A4B-it \
   --quantization fp8_per_channel \
-  --enforce-eager --no-enable-prefix-caching --attention-backend TRITON_ATTN \
+  --enforce-eager --enable-prefix-caching --attention-backend TRITON_ATTN \
   --max-model-len 32768 --gpu-memory-utilization 0.88 \
   --middleware cybergate_plugin.middleware.CyberGateThinkMiddleware
 ```
 
 None of those four flags is a preference:
 
-| flag | without it |
+| flag | why |
 |---|---|
 | `--quantization fp8_per_channel` | 26B at bf16 loads, then OOMs |
-| `--no-enable-prefix-caching` | **a cached prefix skips the forward pass, so the hook never runs and the decision is silently stale** — the server answers normally and the gate is wrong |
+| `--enable-prefix-caching` | reuses KV blocks across multi-turn chats and Pass-1 $\to$ Pass-2 generation (Pass-1 probes set per-turn `cache_salt` so hooks always observe the full prompt) |
 | `--enforce-eager` | compiled graphs elide the hidden states the hooks read |
 | `--attention-backend TRITON_ATTN` | the backend everything here was measured on |
 

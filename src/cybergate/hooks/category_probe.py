@@ -435,10 +435,15 @@ def install_category_probe_hook(
 
             suffix_len = seq_len - u_end
             u1_start = user_spans[0][0] if user_spans else u_start
+            is_fresh_slice = bool(seq_ids is None or _starts_fresh_prompt(seq_ids, family))
+            effective_u1_start = u1_start if is_fresh_slice else max(u1_start, 4)
             is_baseline_prefill = family.is_baseline_prefill(
-                u1_start, suffix_len, span_method, _BASELINE_SUFFIX_MAX
+                effective_u1_start, suffix_len, span_method, _BASELINE_SUFFIX_MAX
             )
-            is_multiturn_ctx = family.looks_like_in_context_prefill(user_spans, seq_ids)
+            is_multiturn_ctx = bool(
+                family.looks_like_in_context_prefill(user_spans, seq_ids)
+                or not is_fresh_slice
+            )
             is_single_turn_with_sys = bool(
                 len(user_spans) == 1
                 and seq_ids is not None
@@ -555,7 +560,10 @@ def _locate_spans(
 
     if seq_ids is not None:
         user_spans, span_method = family.locate_all_user_spans(seq_ids)
-        if not span_method.startswith("exact_token_markers") and seq_len <= _DECODE_BATCH_MAX_TOKENS:
+        if not span_method.startswith("exact_token_markers") and (
+            seq_len <= _DECODE_BATCH_MAX_TOKENS
+            or not _starts_fresh_prompt(seq_ids, family)
+        ):
             return None
         return user_spans, span_method
 
