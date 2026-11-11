@@ -121,10 +121,12 @@ class _RowState:
     #: False when this request declined `POST_THINK_OPENER`, i.e. a tool-bearing turn whose answer
     #: must be free to open on a tool call. The lock and close tag are forced either way.
     force_opener: bool = True
-    #: True for the single step immediately after `<channel|>` / `</think>` on a row that declined
-    #: `POST_THINK_OPENER`: if the model's greedy first visible token is a refusal starter (`"I"`,
-    #: `"Sorry"`, etc.) instead of a tool call or compliant prose, `POST_THINK_OPENER` is forced.
+    #: True immediately after `<channel|>` / `</think>` on a row that declined `POST_THINK_OPENER`:
+    #: skips up to `post_close_ws_budget` leading whitespace tokens (such as Qwen3.8's `\n\n` after
+    #: `</think>`), then if the greedy first non-whitespace visible token is a refusal starter
+    #: (`"I"`, `"Sorry"`, etc.) instead of a tool call or compliant prose, forces `POST_THINK_OPENER`.
     check_post_close_refusal: bool = False
+    post_close_ws_budget: int = 0
     cooldown: int = 0
     injections_used: int = 0
     #: Index into the suppression token ids while an injection is in progress; `None` when free.
@@ -191,6 +193,7 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
             self.close_tag_ids: list[int] = []
             self.close_tag_ids_no_opener: list[int] = []
             self.refusal_start_ids: frozenset[int] = frozenset()
+            self.whitespace_token_ids: frozenset[int] = frozenset()
             log_cybergate_event(
                 "CYBERGATE-COT-CONTROLLER-WARN",
                 "disabled: no tokenizer available, so CoT steering cannot encode its tokens",
@@ -209,6 +212,7 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
             self.close_tag_ids = []
             self.close_tag_ids_no_opener = []
             self.refusal_start_ids = frozenset()
+            self.whitespace_token_ids = frozenset()
             log_cybergate_event(
                 "CYBERGATE-COT-CONTROLLER",
                 "disabled by CYBERGATE_COT_STEERING=0; the regex baseline is selectable instead",
@@ -242,10 +246,19 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
         )
         probe_i = list(tokenizer.encode("I", add_special_tokens=False))
         if probe_i and probe_i != self.prompt_suffix_ids:
+            ws_ids: set[int] = set()
+            for ws in ("\n", "\n\n", "\n\n\n", "\n\n\n\n", " ", "  ", "\t", "\r\n"):
+                toks = list(tokenizer.encode(ws, add_special_tokens=False))
+                if len(toks) == 1 and toks != probe_i and toks != self.prompt_suffix_ids:
+                    ws_ids.add(int(toks[0]))
             ref_ids: set[int] = set()
             for starter in (
                 "I",
                 " I",
+                "I'm",
+                " I'm",
+                "I’m",
+                " I’m",
                 "Sorry",
                 " Sorry",
                 "Cannot",
@@ -262,11 +275,13 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
                 " As",
             ):
                 toks = list(tokenizer.encode(starter, add_special_tokens=False))
-                if toks:
+                if toks and int(toks[0]) not in ws_ids:
                     ref_ids.add(int(toks[0]))
             self.refusal_start_ids = frozenset(ref_ids)
+            self.whitespace_token_ids = frozenset(ws_ids) - self.refusal_start_ids
         else:
             self.refusal_start_ids = frozenset()
+            self.whitespace_token_ids = frozenset()
         # Claim management of the refusal_trace slot -> key table immediately so hook-side
         # `bind_request` stands down even when prefix caching presents truncated prefill slices.
         refusal_trace.sync_bindings({})
@@ -360,6 +375,12 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
                 continue
             if state.done:
                 if state.check_post_close_refusal:
+                    if (
+                        self._would_emit_whitespace(logits, row)
+                        and state.post_close_ws_budget > 0
+                    ):
+                        state.post_close_ws_budget -= 1
+                        continue
                     state.check_post_close_refusal = False
                     if self._would_emit_refusal_start(logits, row) and self.post_close_opener_ids:
                         state.done = False
@@ -400,9 +421,16 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
                     state.close_cursor = len(self.bottom_lock_ids) + len(self.self_close_tag_ids)
                     self._force_next_close_token(logits, row, state)
                 else:
-                    # Nothing left to force: the model closed the thought itself and this row either
-                    # declined the opener or there is none. Step aside and let the answer begin.
+                    # Nothing left to force right now: step aside, while still watching across any
+                    # leading whitespace tokens (e.g. `\n\n`) in case the first visible word is a refusal.
                     state.done = True
+                    if (
+                        not state.force_opener
+                        and self.post_close_opener_ids
+                        and self._would_emit_whitespace(logits, row)
+                    ):
+                        state.check_post_close_refusal = True
+                        state.post_close_ws_budget = 3
                 continue
 
             # Budget reached: force the close tag so a visible answer can still be generated.
@@ -527,12 +555,12 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
             for i in range(len(window) - k + 1)
         )
 
-    def _would_emit_refusal_start(self, logits: Any, row: int) -> bool:
-        """True when a refusal starter token (`"I"`, `"Sorry"`, etc.) is the greedy first visible token."""
-        if not self.refusal_start_ids:
+    def _argmax_in(self, logits: Any, row: int, token_set: frozenset[int]) -> bool:
+        """True when `row`'s greedy next token belongs to `token_set`."""
+        if not token_set:
             return False
         if hasattr(logits, "argmax"):
-            return int(logits[row].argmax().item()) in self.refusal_start_ids
+            return int(logits[row].argmax().item()) in token_set
         if hasattr(logits, "rows"):
             row_vals = logits.rows[row]
             if not row_vals:
@@ -540,8 +568,16 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
             best_val = max(row_vals)
             best_idx = row_vals.index(best_val)
             if list(row_vals).count(best_val) == 1:
-                return best_idx in self.refusal_start_ids
+                return best_idx in token_set
         return False
+
+    def _would_emit_whitespace(self, logits: Any, row: int) -> bool:
+        """True when `row`'s greedy next token is pure whitespace (e.g. Qwen3.8's `\n\n` after `</think>`)."""
+        return self._argmax_in(logits, row, self.whitespace_token_ids)
+
+    def _would_emit_refusal_start(self, logits: Any, row: int) -> bool:
+        """True when a refusal starter token (`"I"`, `"Sorry"`, etc.) is the greedy first visible token."""
+        return self._argmax_in(logits, row, self.refusal_start_ids)
 
     def _force_next_close_token(
         self,
@@ -567,6 +603,7 @@ class RefusalSteeredCoTProcessor(_LOGITS_PROCESSOR_BASE):
             state.done = True
             if not state.force_opener and self.post_close_opener_ids:
                 state.check_post_close_refusal = True
+                state.post_close_ws_budget = 4
         else:
             state.close_cursor = cursor
 

@@ -1226,3 +1226,63 @@ def test_suppressed_opener_still_forces_opener_if_first_visible_token_is_refusal
     assert opener_processor._rows[0].done is True
     assert _step(opener_processor).untouched(0)
 
+
+def test_suppressed_opener_skips_leading_whitespace_before_checking_refusal_start(
+    opener_processor: RefusalSteeredCoTProcessor,
+) -> None:
+    """On Qwen3.8, `</think>` is followed by `\n\n` (token 271) before `"I can't..."` (token 40) or
+    `<tool_call>`. `check_post_close_refusal` must let leading whitespace emit naturally and still
+    force `POST_THINK_OPENER` if the first non-whitespace token is a refusal starter, while leaving
+    `<tool_call>` untouched.
+    """
+    ws_tok = 54
+    refusal_tok = 55
+    tool_tok = 56
+    opener_processor.whitespace_token_ids = frozenset({ws_tok})
+    opener_processor.refusal_start_ids = frozenset({refusal_tok})
+
+    # Case 1: `</think>` -> `\n\n` -> `"I"` => `\n\n` untouched, `"I"` replaced by `OPENER_IDS`
+    output = [20, 21, 22, 23]  # thought_budget == 4
+    opener_processor.update_state(
+        _batch_update(
+            added=[(0, _params(cybergate_suppress_opener=1), _steerable_prompt(0), output)]
+        )
+    )
+    assert [_step(opener_processor).forced_token(0) for _ in range(3)] == [
+        LOCK_IDS[0],
+        CLOSE_TAG_IDS[0],
+        CLOSE_TAG_IDS[1],
+    ]
+    logits_ws = FakeLogits(1)
+    logits_ws[0, ws_tok] = 9.0
+    opener_processor.apply(logits_ws)
+    assert logits_ws.forced_token(0) is None
+    assert opener_processor._rows[0].check_post_close_refusal is True
+
+    logits_ref = FakeLogits(1)
+    logits_ref[0, refusal_tok] = 8.5
+    opener_processor.apply(logits_ref)
+    assert logits_ref.forced_token(0) == OPENER_IDS[0]
+    assert _step(opener_processor).forced_token(0) == OPENER_IDS[1]
+    assert opener_processor._rows[0].done is True
+
+    # Case 2: `</think>` -> `\n\n` -> `<tool_call>` => both `\n\n` and `<tool_call>` untouched
+    opener_processor.update_state(
+        _batch_update(
+            added=[(0, _params(cybergate_suppress_opener=1), _steerable_prompt(1), list(output))]
+        )
+    )
+    for _ in range(3):
+        _step(opener_processor)
+    logits_ws2 = FakeLogits(1)
+    logits_ws2[0, ws_tok] = 9.0
+    opener_processor.apply(logits_ws2)
+    assert logits_ws2.forced_token(0) is None
+
+    logits_tool = FakeLogits(1)
+    logits_tool[0, tool_tok] = 9.5
+    opener_processor.apply(logits_tool)
+    assert logits_tool.forced_token(0) is None
+    assert opener_processor._rows[0].check_post_close_refusal is False
+
+

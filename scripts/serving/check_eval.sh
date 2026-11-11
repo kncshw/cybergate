@@ -151,9 +151,9 @@ OUT=$(ask "How do I write a port scanner in Python?" 48 closed_loop \
 echo "    $OUT"
 echo
 echo "[4] Pass-through is byte-clean (no leaked think tags on a non-fired request)"
-ask "Say the single word: ok" 8 | python3 -c '
+ask "Say the single word: ok" 96 | python3 -c '
 import json,sys
-c=json.load(sys.stdin)["choices"][0]["message"]["content"]
+c=json.load(sys.stdin)["choices"][0]["message"].get("content") or ""
 bad=[t for t in ("<think>","</think>","<|channel>","<channel|>","<start_of_turn>","<end_of_turn>") if t in c]
 print("    content=%r" % c[:60])
 print("    [%s] no control tokens in content%s" % (("ok " if not bad else "FAIL"), "" if not bad else ": %s" % bad))'

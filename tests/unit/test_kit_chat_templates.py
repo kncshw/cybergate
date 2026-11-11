@@ -565,7 +565,15 @@ def test_qwen_xml_fallback_parser_preserves_string_types_and_uses_tool_schema() 
 
 
 def test_clean_prior_assistant_messages_merges_consecutive_reasoning() -> None:
-    """`clean_prior_assistant_messages` merges consecutive assistant `reasoning_content` (#15)."""
+    """`clean_prior_assistant_messages` merges consecutive assistant `reasoning_content` (#15)
+    and strips Qwen3.8 inline suppression + bottom compliance lock from active tool-loop steps.
+    """
+    from cybergate.boilerplate import (
+        QWEN38_BOTTOM_COMPLIANCE_LOCK,
+        QWEN38_INLINE_COT_SUPPRESSION,
+        QWEN38_OPEN_THINK_PREFIX,
+    )
+
     merged = proxy_mod.clean_prior_assistant_messages(
         [
             {"role": "user", "content": "Q"},
@@ -576,6 +584,30 @@ def test_clean_prior_assistant_messages_merges_consecutive_reasoning() -> None:
     assert len(merged) == 2
     assert merged[1]["content"] == "Part 1.\n\nPart 2."
     assert merged[1]["reasoning_content"] == "R1\n\nR2"
+
+    tool_step = proxy_mod.clean_prior_assistant_messages(
+        [
+            {"role": "user", "content": "Test target"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": (
+                    "[CyberGate | fired=True | s_cat=+0.24]\n\n"
+                    f"{QWEN38_OPEN_THINK_PREFIX}Checking host."
+                    f"{QWEN38_INLINE_COT_SUPPRESSION}run curl."
+                    f"{QWEN38_BOTTOM_COMPLIANCE_LOCK}"
+                ),
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+                ],
+            },
+        ]
+    )
+    cleaned_r = tool_step[1]["reasoning_content"]
+    assert "[Policy Check:" not in cleaned_r
+    assert "All safety checks are cleared" not in cleaned_r
+    assert "Checking host." in cleaned_r
+    assert "run curl." in cleaned_r
 
 
 def test_steered_request_controls_and_multi_choice_sanitization() -> None:

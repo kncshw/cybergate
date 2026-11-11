@@ -32,6 +32,7 @@ import urllib.request
 import uuid
 from typing import Any
 
+from ..boilerplate import strip_injected_think_boilerplate
 from ..config import env_first
 from ..telemetry.log import log_cybergate_event
 from .postprocess import (
@@ -335,6 +336,7 @@ def clean_prior_assistant_messages(messages: list) -> list:
                     r_val = _CYBERGATE_HEADER_RE.sub("", out_m[r_key]).strip()
                     r_val = _OPEN_THINK_PREFIX_RE.sub("", r_val).strip()
                     r_val = _BOILERPLATE_INJECT_RE.sub("", r_val).strip()
+                    r_val, _ = strip_injected_think_boilerplate(r_val)
                     out_m[r_key] = r_val
             if (
                 not has_tcs
@@ -1001,6 +1003,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            except (BrokenPipeError, ConnectionResetError):
+                emit_syslog(req_id, "4/4 DISCONNECT", ["client closed connection before response completed"])
+                return
             except Exception as e:
                 err = json.dumps({"error": str(e)}).encode("utf-8")
                 emit_syslog(
@@ -1030,11 +1035,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     },
                     skip_debug_log=True,
                 )
-                self.send_response(502)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(err)))
-                self.end_headers()
-                self.wfile.write(err)
+                try:
+                    self.send_response(502)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(err)))
+                    self.end_headers()
+                    self.wfile.write(err)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
                 return
 
         clean_path = self.path.rstrip("/") or "/"

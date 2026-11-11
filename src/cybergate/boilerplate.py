@@ -202,27 +202,34 @@ def strip_injected_think_boilerplate(
     #    where the stem was prefilled it survives the strip, which is exactly what the previous
     #    two-branch version produced by re-inserting it, and where it was not there is no stem to
     #    preserve. Verified byte-identical on every input shape reachable before this change.
-    for candidate_prefix in (prefix_no_slot, QWEN38_OPEN_THINK_PREFIX):
-        if cleaned.startswith(candidate_prefix):
+    for candidate_prefix in (
+        prefix_no_slot,
+        QWEN38_OPEN_THINK_PREFIX,
+        prefix_no_slot.strip(),
+        QWEN38_OPEN_THINK_PREFIX.strip(),
+    ):
+        if candidate_prefix and cleaned.startswith(candidate_prefix):
             cleaned = cleaned[len(candidate_prefix) :]
             break
-        elif candidate_prefix in cleaned:
+        elif candidate_prefix and candidate_prefix in cleaned:
             cleaned = cleaned.replace(candidate_prefix, "")
             break
 
     # 3. Replace inline suppression remark with a clean markdown bullet continuation when the
     #    family's suppression ends on the `- Next Step: ` slot, or a plain newline when the family
     #    uses a slotless inline reminder (such as Qwen3.8).
-    if suppression in cleaned:
-        replacement = "\n- Next Step: " if suppression.endswith("\n- Next Step: ") else "\n"
-        cleaned = cleaned.replace(suppression, replacement)
+    had_qwen_supp = QWEN38_INLINE_COT_SUPPRESSION in cleaned
+    for cand_supp in (suppression, QWEN38_INLINE_COT_SUPPRESSION):
+        if cand_supp and cand_supp in cleaned:
+            replacement = "\n- Next Step: " if cand_supp.endswith("\n- Next Step: ") else "\n"
+            cleaned = cleaned.replace(cand_supp, replacement)
     cleaned = re.sub(
         r"-\s*\[Policy Check[^\]]{0,300}\]\s*\n?",
         "\n",
         cleaned,
         flags=re.IGNORECASE,
     )
-    if family is not None and not suppression.endswith("\n- Next Step: "):
+    if had_qwen_supp or (family is not None and not suppression.endswith("\n- Next Step: ")):
         cleaned = re.sub(
             r"\[Policy Check[^\]]{0,300}\]\s*\n?",
             "\n",
@@ -230,10 +237,11 @@ def strip_injected_think_boilerplate(
             flags=re.IGNORECASE,
         )
 
-    # 4. Strip bottom compliance lock and final step clearance
+    # 4. Strip bottom compliance lock and final step clearance (both raw and `.strip()`-trimmed forms)
     for suffix_lock in (*locks, QWEN38_BOTTOM_COMPLIANCE_LOCK):
-        if suffix_lock in cleaned:
-            cleaned = cleaned.replace(suffix_lock, "")
+        for lock_variant in (suffix_lock, suffix_lock.strip()):
+            if lock_variant and lock_variant in cleaned:
+                cleaned = cleaned.replace(lock_variant, "")
 
     cleaned = cleaned.strip()
     did_strip = cleaned != orig.strip()
