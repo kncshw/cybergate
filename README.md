@@ -1,4 +1,4 @@
-# CyberGate — Abliteration Without Weight Editing
+# CyberGate — Cyber Security Refusal Removal Without Weight Editing
 
 > **Selectively unlock an LLM's cybersecurity capabilities—per request, without modifying model weights.**  
 > **Unlock cybersecurity while safely refusing other harmful topics.**
