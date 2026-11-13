@@ -1,7 +1,5 @@
 # CyberGate: vLLM Plugin for Cybersecurity Uncensoring Without Weight Editing
 
-**[English](README.md) | [简体中文](README_zh.md)**
-
 [![vLLM Plugin](https://img.shields.io/badge/vLLM_Plugin-0.32.0-3b82f6.svg)](https://github.com/vllm-project/vllm)
 [![Model: Qwen3.8-27B](https://img.shields.io/badge/Model-Qwen3.8--27B-f59e0b.svg)](https://huggingface.co/Qwen/Qwen3.8-27B)
 [![Model: Gemma-4-26B](https://img.shields.io/badge/Model-Gemma--4--26B--A4B-ea4335.svg)](https://huggingface.co/google/gemma-4-26B-A4B-it)

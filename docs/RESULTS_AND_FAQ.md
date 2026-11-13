@@ -1,6 +1,6 @@
 # Benchmarks, Model Compatibility & Quantization FAQ
 
-**[English](RESULTS_AND_FAQ.md) | [简体中文](RESULTS_AND_FAQ_zh.md)** · **[← Back to README](../README.md)**
+**[← Back to README](../README.md)**
 
 ---
 
